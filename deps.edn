@@ -1,0 +1,10 @@
+{:paths ["src"]
+ :mvn/local-repo "./.m2"
+ :deps {org.clojure/clojure {:mvn/version "1.10.1"}
+        org.clojure/core.async {:mvn/version "0.4.500"}
+        com.alpeware/jaq-repl {:git/url "https://github.com/alpeware/jaq-repl"
+                               :sha "a01f8db75944d8066865f482b2b1383090ed78e7"}
+        net.cgrand/xforms {:mvn/version "0.19.2" :exclusions [org.clojure/clojurescript org.clojure/clojure]}}
+ :aliases {:test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jaq.http.test-server"]}}}
