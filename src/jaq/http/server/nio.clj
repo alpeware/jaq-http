@@ -95,7 +95,20 @@
 (defn ^SelectionKey exchange [^SelectionKey channel-key]
   (let [^SocketChannel channel (.channel channel-key)
         req (async/chan *chan-buf*)
-        ch (async/chan *chan-buf* *app-xrf* (fn [e] (prn ::exception e) {:exception e}))]
+        ;;ch (async/chan *chan-buf* *app-xrf* (fn [e] (prn ::exception e) {:exception e}))
+        ch (async/chan *chan-buf*)]
+
+    (async/thread
+      (let [acc []
+            rf (fn
+                 ([acc]) acc
+                 ([acc x] (conj acc x)))
+            xf (*app-xrf* rf)]
+        (when-let [buf (async/<!! req)]
+          (doseq [x buf]
+            (let [r (xf x)]
+              (when (reduced r)
+                (async/>!! ch r)))))))
 
     ;; req
     (async/go-loop []
@@ -112,19 +125,19 @@
                     (ByteBuffer/wrap))]
         (close! req)
         (close! ch)
-        (->> {:buf buf}
+        (->> buf
              (.attach channel-key))
         (.interestOps channel-key SelectionKey/OP_WRITE)
         (-> channel-key (.selector) (.wakeup))))
 
-    (->> {:req req}
+    (->> req
          (.attach channel-key))
 
     channel-key))
 
 
 (defn read! [^SelectionKey channel-key]
-  (let [{:keys [req]} (.attachment channel-key)
+  (let [req (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (when req
       (try
@@ -151,7 +164,7 @@
           (prn ::client ::socket ::wrong ::state e))))))
 
 (defn write! [^SelectionKey channel-key]
-  (let [{:keys [^ByteBuffer buf]} (.attachment channel-key)
+  (let [^ByteBuffer buf (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (try
       (let [n (.write channel buf)

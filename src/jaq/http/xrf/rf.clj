@@ -1,15 +1,5 @@
 (ns jaq.http.xrf.rf)
 
-#_(def index
-  (fn [rf]
-    (let [i (volatile! -1)]
-      (fn
-        ([] (rf))
-        ([acc] (->> {:index @i :char :eof} (rf acc) (unreduced) (rf)))
-        ([acc {:keys [index char finalized] :as x}]
-         (vswap! i inc)
-         (rf acc {:index @i :char x}))))))
-
 (def index
   (fn [rf]
     (let [i (volatile! -1)]
@@ -18,7 +8,7 @@
         ([acc] (rf acc))
         ([acc x]
          (vswap! i inc)
-         (rf acc {:index @i :char x}))))))
+         (rf acc (transient {:index @i :char x})))))))
 
 ;; TODO: credit original
 (defn branch
@@ -36,3 +26,7 @@
          (if (pred input)
            (true-rf result input)
            (false-rf result input)))))))
+
+#_(
+   *ns*
+   )

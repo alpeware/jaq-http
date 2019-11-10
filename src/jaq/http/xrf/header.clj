@@ -16,213 +16,215 @@
 (def request-line
   (comp
    (fn method [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
            k :method
            assoc-fn (fn [acc x] (->>
-                                 (:val @rf-state)
-                                 (assoc x k)
+                                 @val
+                                 (assoc! x k)
                                  (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
+            @done
             (assoc-fn acc x)
 
             (= char \space)
             (do
-              (->> (:acc @rf-state) (apply str) (keyword) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
+              (->> @vacc (apply str) (keyword) (vreset! val))
+              (vreset! done true)
               (assoc-fn acc x))
 
             :else
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (drop 1)
    (fn path [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
-           assoc-fn (fn [k acc x] (->>
-                                   (:val @rf-state)
-                                   (assoc x k)
-                                   (rf acc)))]
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
+           k :path
+           assoc-fn (fn [acc x] (->>
+                                 @val
+                                 (assoc! x k)
+                                 (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
-            (assoc-fn :path acc x)
+            @done
+            (assoc-fn acc x)
 
             (or (= char \?)
                 (= char \#)
                 (= char \space))
             (do
-              (->> (:acc @rf-state) (apply str) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
-              (assoc-fn :path acc x))
+              (->> @vacc (apply str) (vreset! val))
+              (vreset! done true)
+              (assoc-fn acc x))
 
             :else
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (fn query [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
-           assoc-fn (fn [k acc x] (->>
-                                   (:val @rf-state)
-                                   (assoc x k)
-                                   (rf acc)))]
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
+           k :query
+           assoc-fn (fn [acc x] (->>
+                                 @val
+                                 (assoc! x k)
+                                 (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
-            (assoc-fn :query acc x)
+            @done
+            (assoc-fn acc x)
 
             (and
-             (empty? (:acc @rf-state))
+             (empty? @vacc)
              (or (= char \space)
                  (= char \#)))
             (do
-              (vswap! rf-state assoc :done true)
-              (assoc-fn :query acc x))
+              (vreset! done true)
+              (assoc-fn acc x))
 
             (or (= char \space)
                 (= char \#))
             (do
-              (->> (:acc @rf-state) (apply str) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
-              (assoc-fn :query acc x))
+              (->> @vacc (apply str) (vreset! val))
+              (vreset! done true)
+              (assoc-fn acc x))
 
             (not= char \?)
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (fn fragment [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
            k :fragment
            assoc-fn (fn [acc x] (->>
-                                 (:val @rf-state)
-                                 (assoc x k)
+                                 @val
+                                 (assoc! x k)
                                  (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
+            @done
             (assoc-fn acc x)
 
             (and
-             (empty? (:acc @rf-state))
+             (empty? @vacc)
              (= char \space))
             (do
-              (vswap! rf-state assoc :done true)
+              (vreset! done true)
               (assoc-fn acc x))
 
             (= char \space)
             (do
-              (->> (:acc @rf-state) (apply str) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
+              (->> @vacc (apply str) (vreset! val))
+              (vreset! done true)
               (assoc-fn acc x))
 
             (not= char \#)
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (drop 1)
    (fn scheme [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
            k :scheme
            assoc-fn (fn [acc x] (->>
-                                 (:val @rf-state)
-                                 (assoc x k)
+                                 @val
+                                 (assoc! x k)
                                  (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
+            @done
             (assoc-fn acc x)
 
             (= char \/)
             (do
-              (->> (:acc @rf-state) (apply str) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
+              (->> @vacc (apply str) (vreset! val))
+              (vreset! done true)
               (assoc-fn acc x))
 
             :else
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (drop 1)
    (fn minor [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
            k :minor
            assoc-fn (fn [acc x] (->>
-                                 (:val @rf-state)
-                                 (assoc x k)
+                                 @val
+                                 (assoc! x k)
                                  (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
+            @done
             (assoc-fn acc x)
 
             (= char \.)
             (do
-              (->> (:acc @rf-state) (apply str) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
+              (->> @vacc (apply str) (Integer/parseInt) (vreset! val))
+              (vreset! done true)
               (assoc-fn acc x))
 
             :else
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (drop 1)
    (fn major [rf]
-     (let [rf-state (volatile! {:done false
-                                :acc []
-                                :val nil})
+     (let [done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
            k :major
            assoc-fn (fn [acc x] (->>
-                                 (:val @rf-state)
-                                 (assoc x k)
+                                 @val
+                                 (assoc! x k)
                                  (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char] :as x}]
           (cond
-            (:done @rf-state)
+            @done
             (assoc-fn acc x)
 
             (= char \return)
             (do
-              (->> (:acc @rf-state) (apply str) (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :done true)
+              (->> @vacc (apply str) (Integer/parseInt) (vreset! val))
+              (vreset! done true)
               (assoc-fn acc x))
 
             :else
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))
    (drop 2)))
 
@@ -238,21 +240,10 @@
 
 (def headers
   (comp
-   #_(let [finalized (volatile! false)
-         buf (volatile! []) ;; TODO: use some 4 char ring buffer
-         header-end [\return \newline \return \newline]]
-     (map (fn [{:keys [char] :as x}]
-            (when-not @finalized
-              (prn @buf)
-              (vswap! buf (fn [val arg] (->> (conj val arg) (take-last 4) (vec))) char))
-            (when (and (not @finalized)
-                       (= (take-last 4 @buf) header-end))
-              (vreset! finalized true))
-            (assoc x :finalized @finalized))))
    (fn [rf]
      (let [finalized (volatile! false)
            header-end [\return \newline \return \newline]
-           buf (volatile! []) ;; TODO: use some 4 char ring buffer
+           buf (volatile! []) ;; TODO: use ArrayDeque
            vi (volatile! -4)]
        (fn
          ([] (rf))
@@ -265,21 +256,19 @@
                      (= (take-last 4 @buf) header-end))
             (vreset! finalized true))
           (->> @finalized
-               (assoc x :finalized)
+               (assoc! x :finalized)
                (rf acc))))))
    (fn [rf]
      (let [headers-map (volatile! {})
-           rf-state (volatile! {:done false
-                                :acc []
-                                :val nil
-                                :header-name false})
+           done (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
+           header-name (volatile! false)
            k :headers
-           assoc-fn (fn [acc x]
-                      (->>
-                       #_(:val @rf-state)
-                       @headers-map
-                       (assoc x k)
-                       (rf acc)))]
+           assoc-fn (fn [acc x] (->>
+                                 @headers-map
+                                 (assoc! x k)
+                                 (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
@@ -288,45 +277,45 @@
             finalized
             (assoc-fn acc x)
 
-            (:done @rf-state)
+            @done
             (do
-              (vswap! headers-map conj (:val @rf-state))
-              (vreset! rf-state {:done false
-                                 :acc []
-                                 :val nil
-                                 :header-name false})
+              (vswap! headers-map conj @val)
+              (vreset! done false)
+              (vreset! vacc [])
+              (vreset! val nil)
+              (vreset! header-name false)
               (rf acc))
 
             (and (= char \:)
-                 (not (:header-name @rf-state)))
+                 (not @header-name ))
             (do
-              (->> (:acc @rf-state)
+              (->> @vacc
                    (map (fn [^Character e] (Character/toLowerCase e)))
                    (apply str)
                    #_((fn [e] (.toLowerCase e Locale/ENGLISH)))
                    (keyword)
-                   (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :header-name true)
-              (vswap! rf-state assoc :acc [])
+                   (vreset! val))
+              (vreset! header-name true)
+              (vreset! vacc [])
               (rf acc))
 
             (and (= char \space)
-                 (empty? (:acc @rf-state)))
+                 (empty? @vacc))
             (do
               (rf acc))
 
             (and (= char \return)
-                 (:val @rf-state))
-            (let [hk (:val @rf-state)
-                  hv (->> (:acc @rf-state) (apply str))]
-              (vswap! rf-state assoc :val {hk hv})
-              (vswap! rf-state assoc :done true)
+                 @val)
+            (let [hk @val
+                  hv (->> @vacc (apply str))]
+              (vreset! val {hk hv})
+              (vreset! done true)
               (rf acc))
 
             (and (not= char \return)
                  (not= char \newline))
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))))
 
 #_(

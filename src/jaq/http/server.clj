@@ -20,7 +20,7 @@
   (->> (or
         (some-> env :PORT (Integer/parseInt))
         3000)
-       (serve app/echo)
+       (serve app/repl)
        :shutdown
        (async/<!!)))
 

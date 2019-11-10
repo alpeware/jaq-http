@@ -14,6 +14,7 @@
            :p
            {:extra-paths ["profiles"]
             :main-opts ["-m" "jaq.http.server"]
+            ;; profiling setup https://github.com/google/pprof/issues/346#issuecomment-378119331
             :jvm-opts ["-agentpath:./profiler_java_agent.so=-logtostderr,-cprof_profile_filename=./profiles/profile_,-cprof_enable_heap_sampling,-cprof_interval_sec=5,-cprof_duration_sec=10"]}
            :t
            {:extra-paths ["test"]

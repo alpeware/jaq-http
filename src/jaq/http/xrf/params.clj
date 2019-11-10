@@ -2,9 +2,12 @@
 
 (def decode
   (fn [rf]
-    (let [rf-state (volatile! {:decode false
+    (let [decode (volatile! false)
+          vacc (volatile! [])
+          length (volatile! 0)
+          rf-state (volatile! {:decode false
                                :acc []})
-          length (volatile! 0)]
+          ]
       (fn
         ([] (rf))
         ([acc] (rf acc))
@@ -14,38 +17,38 @@
          (vswap! length inc)
          (cond
            (= char \+)
-           (->> (assoc x :char \space)
+           (->> (assoc! x :char \space)
                 (rf acc))
 
            (= char \&)
-           (->> (assoc x :char :sep)
+           (->> (assoc! x :char :sep)
                 (rf acc))
 
            (= char \%)
            (do
-             (vswap! rf-state assoc :decode true)
+             (vreset! decode true)
              (rf acc))
 
-           (:decode @rf-state)
+           @decode
            (do
-             (vswap! rf-state update :acc conj char)
-             (if (-> @rf-state :acc (count) (= 2))
-               (->> @rf-state
-                    :acc
+             (vswap! vacc conj char)
+             (if (-> @vacc (count) (= 2))
+               (->> @vacc
                     (apply str)
                     ((fn [e]
-                       (vswap! rf-state conj {:decode false :acc []})
+                       (vreset! decode false)
+                       (vreset! vacc [])
                        (-> e
                            (Integer/parseInt 16)
                            (clojure.core/char))))
-                    (assoc x :char)
+                    (assoc! x :char)
                     (rf acc))
                (rf acc)))
 
            :else
            (rf acc x))
          (when (= @length (Integer/parseInt content-length))
-           (->> (assoc x :char :eof)
+           (->> (assoc! x :char :eof)
                 (rf acc))))))))
 
 #_(
@@ -71,16 +74,15 @@
    decode
    (fn [rf]
      (let [params-map (volatile! {})
-           rf-state (volatile! {:done false
-                                :acc []
-                                :val nil
-                                :param-name false})
+           done (volatile! false)
+           param-name (volatile! false)
+           vacc (volatile! [])
+           val (volatile! nil)
            k :params
-           assoc-fn (fn [acc x]
-                      (->>
-                       @params-map
-                       (assoc x k)
-                       (rf acc)))]
+           assoc-fn (fn [acc x] (->>
+                                 @params-map
+                                 (assoc! x k)
+                                 (rf acc)))]
        (fn
          ([] (rf))
          ([acc] (rf acc))
@@ -89,32 +91,32 @@
                 :as x}]
           (cond
             (and (= char \=)
-                 (not (:param-name @rf-state)))
+                 (not @param-name))
             (do
-              (->> (:acc @rf-state)
+              (->> @vacc
                    (apply str)
                    (keyword)
-                   (vswap! rf-state assoc :val))
-              (vswap! rf-state assoc :acc [])
-              (vswap! rf-state assoc :param-name true)
+                   (vreset! val))
+              (vreset! vacc [])
+              (vreset! param-name true)
               (rf acc))
 
             (and (or (= char :sep) (= char :eof))
-                 (:val @rf-state))
-            (let [pk (:val @rf-state)
-                  pv (->> (:acc @rf-state) (apply str))]
+                 @val)
+            (let [pk @val
+                  pv (->> @vacc (apply str))]
               (vswap! params-map conj {pk pv})
-              (vreset! rf-state {:done false
-                                 :acc []
-                                 :val nil
-                                 :param-name false})
+              (vreset! done false)
+              (vreset! param-name false)
+              (vreset! vacc [])
+              (vreset! val nil)
               (if (= char :eof)
                 (assoc-fn acc x)
                 (rf acc)))
 
             :else
             (do
-              (vswap! rf-state update :acc conj char)
+              (vswap! vacc conj char)
               (rf acc)))))))))
 
 #_(
