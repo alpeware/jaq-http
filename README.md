@@ -32,10 +32,10 @@ Alpha stage - not yet production ready and with some changes expected.
 ## Usage
 
 The following API is provided in `jaq.http.server`:
-* `(serve xrf port) ;; start server on port
+* `(serve xrf port) ;; start server on port`
 
 The following API is provided in `jaq.http.client`:
-* `(request xrf opts) ;; perform request
+* `(request xrf opts) ;; perform request`
 
 
 ## Example Usage

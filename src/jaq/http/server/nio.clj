@@ -68,8 +68,8 @@
   (.select selector))
 
 (defn ^SocketChannel client-channel [^ServerSocketChannel ssc]
-  (-> (.accept ssc)
-      (non-blocking)))
+  (some-> (.accept ssc)
+          (non-blocking)))
 
 (defn ^SelectionKey readable [^Selector selector ^SocketChannel channel]
   (.register channel selector SelectionKey/OP_READ))
@@ -87,6 +87,10 @@
 
 (defn write-channel [^SocketChannel channel ^ByteBuffer bytes]
   (.write channel bytes))
+
+(defn close! [ch]
+  (when ch
+    (async/close! ch)))
 
 (defn ^SelectionKey exchange [^SelectionKey channel-key]
   (let [^SocketChannel channel (.channel channel-key)
@@ -106,8 +110,8 @@
                     (response)
                     ^String (.getBytes charset)
                     (ByteBuffer/wrap))]
-        (async/close! req)
-        (async/close! ch)
+        (close! req)
+        (close! ch)
         (->> {:buf buf}
              (.attach channel-key))
         (.interestOps channel-key SelectionKey/OP_WRITE)
@@ -118,9 +122,6 @@
 
     channel-key))
 
-(defn close! [ch]
-  (when ch
-    (async/close! ch)))
 
 (defn read! [^SelectionKey channel-key]
   (let [{:keys [req]} (.attachment channel-key)
@@ -176,19 +177,10 @@
     (.setReuseAddress true)))
 
 (defn accept! [ssc client-selector]
-  (->> (client-channel ssc)
-       (readable client-selector)
-       (exchange)
-       #_((fn [^SelectionKey k]
-          (when (.isReadable k)
-            (read! k))
-         (-> k (.selector) (.wakeup)))))
-  #_(->> (client-channel ssc)
-       (readable client-selector)
-       (exchange)
-       ^SocketChannel (.channel)
-       ^Socket (.socket)
-       (client-socket)))
+  (some->> ssc
+           (client-channel)
+           (readable client-selector)
+           (exchange)))
 
 (defn serve [xrf port]
   (let [ssc (server-channel)
@@ -205,7 +197,8 @@
     (async/tap shutdown-mult main-shutdown)
     ;; bind
     (bind socket port pending-connections)
-    ;; accept loop
+    ;; reactor pattern
+    ;; see http://gee.cs.oswego.edu/dl/cpjslides/nio.pdf
     (async/thread
       (loop []
         (if (async/poll! main-shutdown)
