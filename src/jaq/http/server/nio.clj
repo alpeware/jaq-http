@@ -8,13 +8,16 @@
   (:import
    [java.io IOException]
    [java.net URLDecoder URI]
-   [java.net InetSocketAddress ServerSocket]
+   [java.net InetSocketAddress ServerSocket Socket]
    [java.nio.charset StandardCharsets Charset]
-   [java.nio.channels ServerSocketChannel Selector SelectionKey SocketChannel]
+   [java.nio.channels
+    ServerSocketChannel Selector SelectionKey SocketChannel SelectableChannel]
    [java.nio.channels.spi AbstractSelectableChannel]
    [java.nio ByteBuffer CharBuffer]
    [java.util UUID Locale]
    [java.util.concurrent ArrayBlockingQueue ThreadPoolExecutor TimeUnit]))
+
+(set! *warn-on-reflection* true)
 
 (def ^:dynamic *http-server* nil)
 
@@ -22,9 +25,11 @@
 
 (def ^:dynamic *chan-buf* 1)
 
-(def buffer-size (* 256 1024))
+(def pending-connections (* 16 1024))
+(def socket-buffer-size (* 16 1024))
+(def buffer-size (* 32 1024))
 
-(def charset StandardCharsets/UTF_8)
+(def ^Charset charset StandardCharsets/UTF_8)
 
 (def ^ByteBuffer read-buffer (ByteBuffer/allocateDirect buffer-size))
 
@@ -46,28 +51,30 @@
   (-> (ServerSocketChannel/open)
       (non-blocking)))
 
-(defn socket [ssc]
-  (.socket ssc))
+(defn ^ServerSocket socket [^ServerSocketChannel ssc]
+  (doto (.socket ssc)
+    (.setReuseAddress true)
+    (.setReceiveBufferSize socket-buffer-size)))
 
-(defn bind [socket port backlog]
-  (.bind socket (InetSocketAddress. port) backlog))
+(defn bind [^ServerSocket ss port backlog]
+  (.bind ss (InetSocketAddress. port) backlog))
 
-(defn selector [] (Selector/open))
+(defn ^Selector selector [] (Selector/open))
 
-(defn listener [ssc selector]
+(defn ^SelectionKey listener [^ServerSocketChannel ssc ^Selector selector]
   (.register ssc selector SelectionKey/OP_ACCEPT))
 
-(defn select [selector]
-  (.selectNow selector))
+(defn select [^Selector selector]
+  (.select selector))
 
 (defn ^SocketChannel client-channel [^ServerSocketChannel ssc]
   (-> (.accept ssc)
       (non-blocking)))
 
-(defn readable [selector ^SocketChannel channel]
+(defn ^SelectionKey readable [^Selector selector ^SocketChannel channel]
   (.register channel selector SelectionKey/OP_READ))
 
-(defn response [{:keys [status headers body]}]
+(defn ^String response [{:keys [status headers body]}]
   (->> ["HTTP/1.1" " " status " " "OK" "\r\n"
         ;;"Host: " (:host headers) "\r\n"
         ;;"Date: Sat, 02 Nov 2019 21:16:00 GMT" "\r\n"
@@ -78,13 +85,14 @@
         body]
        (apply str)))
 
-(defn write-channel [^SocketChannel channel bytes]
+(defn write-channel [^SocketChannel channel ^ByteBuffer bytes]
   (.write channel bytes))
 
-(defn connection [^SelectionKey channel-key]
+(defn ^SelectionKey exchange [^SelectionKey channel-key]
   (let [^SocketChannel channel (.channel channel-key)
         req (async/chan *chan-buf*)
         ch (async/chan *chan-buf* *app-xrf* (fn [e] (prn ::exception e) {:exception e}))]
+
     ;; req
     (async/go-loop []
       (when-let [buf (async/<! req)]
@@ -95,23 +103,26 @@
     (async/go
       (let [res (async/<! ch)
             buf (-> res
-                     (response)
-                     (.getBytes charset)
-                     (ByteBuffer/wrap))]
+                    (response)
+                    ^String (.getBytes charset)
+                    (ByteBuffer/wrap))]
         (async/close! req)
         (async/close! ch)
         (->> {:buf buf}
              (.attach channel-key))
-        (.interestOps channel-key SelectionKey/OP_WRITE)))
+        (.interestOps channel-key SelectionKey/OP_WRITE)
+        (-> channel-key (.selector) (.wakeup))))
 
     (->> {:req req}
-         (.attach channel-key))))
+         (.attach channel-key))
 
-(defn close [ch]
+    channel-key))
+
+(defn close! [ch]
   (when ch
     (async/close! ch)))
 
-(defn handle-read [^SelectionKey channel-key]
+(defn read! [^SelectionKey channel-key]
   (let [{:keys [req]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (when req
@@ -124,22 +135,22 @@
             (< n 0) ;; end of stream
             (do
               (.interestOps channel-key 0)
-              (close req))
+              (close! req))
 
             (> n 0) ;; read some bytes
             (->> read-buffer
-                 (. charset decode)
+                 ^CharBuffer (. charset decode)
                  (.asReadOnlyBuffer)
                  (async/>!! req))))
         (catch IOException e
-          (close req)
+          (close! req)
           (prn ::client ::socket ::io e))
         (catch IllegalStateException e
-          (close req)
+          (close! req)
           (prn ::client ::socket ::wrong ::state e))))))
 
-(defn handle-write [^SelectionKey channel-key]
-  (let [{:keys [buf]} (.attachment channel-key)
+(defn write! [^SelectionKey channel-key]
+  (let [{:keys [^ByteBuffer buf]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (try
       (let [n (.write channel buf)
@@ -149,97 +160,99 @@
             (.close channel)
             (.cancel channel-key))
 
-          (.interestOps channel-key SelectionKey/OP_WRITE)))
+          (do
+            (.interestOps channel-key SelectionKey/OP_WRITE)
+            (-> channel-key (.selector) (.wakeup)))))
       (catch IOException e
         (prn ::client ::socket ::io e))
       (catch IllegalStateException e
         (prn ::client ::socket ::wrong ::state e)))))
 
-(defn accept [ssc client-selector]
+(defn client-socket [^Socket socket]
+  (doto socket
+    (.setTcpNoDelay true)
+    (.setReceiveBufferSize socket-buffer-size)
+    (.setSendBufferSize socket-buffer-size)
+    (.setReuseAddress true)))
+
+(defn accept! [ssc client-selector]
   (->> (client-channel ssc)
        (readable client-selector)
-       (connection)))
+       (exchange)
+       #_((fn [^SelectionKey k]
+          (when (.isReadable k)
+            (read! k))
+         (-> k (.selector) (.wakeup)))))
+  #_(->> (client-channel ssc)
+       (readable client-selector)
+       (exchange)
+       ^SocketChannel (.channel)
+       ^Socket (.socket)
+       (client-socket)))
 
 (defn serve [xrf port]
   (let [ssc (server-channel)
         socket (socket ssc)
-        accept-selector (selector)
-        client-selector (selector)
-        listener-keys (listener ssc accept-selector)
+        main-selector (selector)
+        listener-keys (listener ssc main-selector)
         shutdown (async/chan)
         shutdown-mult (async/mult shutdown)
-        accept-shutdown (async/chan)
-        requests-shutdown (async/chan)
-        responses-shutdown (async/chan)]
+        main-shutdown (async/chan)]
     ;; app
-    (alter-var-root #'*app-xrf* (constantly xrf))
+    (alter-var-root
+     #'*app-xrf* (constantly xrf))
     ;; shutdown hooks
-    (async/tap shutdown-mult accept-shutdown)
-    (async/tap shutdown-mult requests-shutdown)
-    (async/tap shutdown-mult responses-shutdown)
+    (async/tap shutdown-mult main-shutdown)
     ;; bind
-    (bind socket port 0)
-    ;; accept
-    (async/go-loop []
-      (let [[_ ch] (async/alts! [accept-shutdown (async/timeout 1)])]
-        (if (= ch accept-shutdown)
+    (bind socket port pending-connections)
+    ;; accept loop
+    (async/thread
+      (loop []
+        (if (async/poll! main-shutdown)
           (try
             ;; TODO: doesn't free the port
             (prn ::accept ::shutdown)
+            (.close main-selector)
             (.close ssc)
             (.close socket)
-            (.wakeup accept-selector)
             (catch IOException _))
-          (let [ready (select accept-selector)]
+          (let [ready (select main-selector)]
             (when (> ready 0)
-              (let [it (-> accept-selector (.selectedKeys) (.iterator))]
+              (let [it (-> main-selector (.selectedKeys) (.iterator))]
                 (loop []
                   (when (.hasNext it)
                     (let [^SelectionKey channel-key (.next it)]
                       (.remove it)
-                      (when (.isAcceptable channel-key)
-                        (accept ssc client-selector)))
-                    (recur)))))
-            (recur)))))
-    ;; handle requests
-    (async/go-loop []
-      (let [[_ ch] (async/alts! [requests-shutdown (async/timeout 1)])]
-        (if (= ch requests-shutdown)
-          (do
-            ;; TODO: close all client sockets?
-            (.wakeup client-selector)
-            (prn ::requests ::shutdown))
-          (let [ready (select client-selector)]
-            (when (> ready 0)
-              (let [it (-> client-selector (.selectedKeys) (.iterator))]
-                (loop []
-                  (when (.hasNext it)
-                    (try
-                      (let [^SelectionKey channel-key (.next it)]
-                        (.remove it)
-                        (when (.isReadable channel-key)
-                          (handle-read channel-key))
-                        (when (.isWritable channel-key)
-                          (handle-write channel-key)))
-                      (catch Exception e
-                        (prn ::requests e)))
+                      (cond
+                        (not (.isValid channel-key))
+                        (.cancel channel-key)
+
+                        (.isAcceptable channel-key)
+                        (accept! ssc main-selector)
+
+                        (.isReadable channel-key)
+                        (read! channel-key)
+
+                        (.isWritable channel-key)
+                        (write! channel-key)))
                     (recur)))))
             (recur)))))
     (prn ::server ::listening port)
     (alter-var-root
      #'*http-server*
-     (constantly {:xrf xrf
-                  :ssc ssc
-                  :socket socket
-                  :accept-selector accept-selector
-                  :client-selector client-selector
-                  :shutdown shutdown}))))
+     (constantly
+      {:xrf xrf
+       :ssc ssc
+       :socket socket
+       :main-selector main-selector
+       :shutdown shutdown}))))
 
 #_(
    *ns*
    (require 'jaq.http.server.nio :reload)
    (in-ns 'jaq.http.server.nio)
 
+   (set! *compile-path* "foo")
    *e
 
    (def http-server

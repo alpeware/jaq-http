@@ -7,11 +7,13 @@
    [clojure.walk :as walk]
    [jaq.http.xrf.app :as app])
   (:import
-   [java.io IOException]
-   [java.net ServerSocket SocketException]
+   [java.io BufferedReader BufferedWriter IOException]
+   [java.net Socket ServerSocket SocketException]
    [java.nio.charset StandardCharsets Charset]
    [java.time.format DateTimeFormatter]
    [java.time ZonedDateTime ZoneId]))
+
+(set! *warn-on-reflection* true)
 
 (def ^:dynamic *http-server* nil)
 
@@ -28,11 +30,12 @@
        (into {})
        (walk/keywordize-keys)))
 
-(def pattern (DateTimeFormatter/ofPattern "EEE, dd MMM yyyy HH:mm:ss zzz"))
+(def ^DateTimeFormatter pattern
+  (DateTimeFormatter/ofPattern "EEE, dd MMM yyyy HH:mm:ss zzz"))
 
-(def zone (ZoneId/of "GMT"))
+(def ^ZoneId zone (ZoneId/of "GMT"))
 
-(defn now []
+(defn ^String now []
   (-> zone
       (ZonedDateTime/now)
       (.format pattern)))
@@ -42,82 +45,85 @@
 
 (defn response [{:keys [status headers body]}]
   (->> ["HTTP/1.1" " " status " " "OK" "\r\n"
-        "Date:" " " (now) "\r\n"
+        ;;"Date:" " " (now) "\r\n"
         ;;"Host:" " " (:host headers) "\r\n"
         ;;"Server:" " alpeware/jaq" "\r\n"
         "Content-Type: text/plain" "\r\n"
         "Connection: close" "\r\n"
-        ;;"Content-Length: " (count body) "\r\n"
+        "Content-Length: " (count body) "\r\n"
         "\r\n"
         body]
        (apply str)))
 
-(defn connection [client]
-  (let [in (io/reader (.getInputStream client))
-        out (io/writer (.getOutputStream client))
-        ch (async/chan *chan-buf* *app-xrf* (fn [e] (prn ::exception e) {:exception e}))]
+(defn exchange [^Socket client]
+  (let [ch (async/chan *chan-buf* *app-xrf* (fn [e] (prn ::exception e) {:exception e}))]
 
     ;; req
-    (let [buf (char-array buffer-size)]
-      (async/go-loop []
-        (let [n (try
-                  (.read in buf)
-                  (catch SocketException e
-                    -1)
-                  (catch IOException e
-                    -1))]
-          (if (< n 0)
-            (do
-              (.close in))
-
-            (do
-              (async/onto-chan ch (char-array n buf) false)
-              (recur))))))
+    (async/thread
+      (try
+        (with-open [^BufferedReader in (io/reader (.getInputStream client))]
+          (loop []
+            (let [c (.read in)]
+              (when (> c 0)
+                (async/>!! ch (char c))
+                (recur)))))
+        (catch SocketException _)))
 
     ;; res
-    (async/go
-      (let [res (async/<! ch)
-            buf (-> res
-                     (response)
-                     #_(.getBytes charset)
-                     (char-array))]
-        (async/close! ch)
-        (try
-          (.write out buf)
-          (.close out)
-          (.close in)
-          (.close client)
-          (catch SocketException e
-            e)
-          (catch IOException e
-            e))))))
+    (async/thread
+      (try
+        (with-open [^BufferedWriter out (io/writer (.getOutputStream client))]
+          (some->> (async/<!! ch)
+               (response)
+               (char-array)
+               (.write out))
+          (.flush out))
+        (catch SocketException _))
+      (async/close! ch)
+      (.close client))))
 
 (defn serve [xrf p]
-  (let [server (ServerSocket. p)]
+  (let [^ServerSocket server (ServerSocket. p)
+        shutdown (async/chan)
+        shutdown-mult (async/mult shutdown)
+        main-shutdown (async/chan)]
     (prn ::starting ::port p)
     ;; app
     (alter-var-root #'*app-xrf* (constantly xrf))
-    (->>
-     (async/go-loop []
-       (when-let [client (async/<! (async/thread (.accept server)))]
-         (connection client)
-         (recur)))
-     (conj [:server server :chan])
-     (apply hash-map))))
+    (async/tap shutdown-mult main-shutdown)
+
+    (async/thread
+      (loop []
+        (if (async/poll! main-shutdown)
+          (try
+            (prn ::shutdown)
+            (.close server)
+            (catch IOException _))
+          (when-let [^Socket client (.accept server)]
+            #_(prn ::clients @clients)
+            (exchange client)
+            (recur)))))
+
+    (alter-var-root
+     #'*http-server*
+     (constantly {:xrf xrf
+                  :server server
+                  :shutdown shutdown}))))
 
 (defn -main [& args]
-  (prn ::server ::listening port)
-  (->> port (serve app/main) :chan (async/<!!)))
+  (->> port (serve app/repl) :shutdown (async/<!!)))
 
 #_(
    (require 'jaq.http.server.net :reload)
    (in-ns 'jaq.http.server.net)
    (compile 'jaq.http.server.net)
    *e
+   @clients
    *ns*
-   (def s (serve app/main 10010))
+   (def s (serve app/repl 10010))
    s
-   (.isClosed s)
+
    (-> s :server (.close))
    (slurp "http://localhost:10010")
+   (in-ns 'clojure.core)
    )

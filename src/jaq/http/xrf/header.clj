@@ -301,8 +301,9 @@
                  (not (:header-name @rf-state)))
             (do
               (->> (:acc @rf-state)
+                   (map (fn [^Character e] (Character/toLowerCase e)))
                    (apply str)
-                   ((fn [e] (.toLowerCase e Locale/ENGLISH)))
+                   #_((fn [e] (.toLowerCase e Locale/ENGLISH)))
                    (keyword)
                    (vswap! rf-state assoc :val))
               (vswap! rf-state assoc :header-name true)

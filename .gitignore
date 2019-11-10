@@ -2,8 +2,10 @@ pom.xml
 pom.xml.asc
 *.jar
 *.class
+*.so
 /lib/
 /classes/
+/profiles/
 /target/
 /checkouts/
 .lein-deps-sum

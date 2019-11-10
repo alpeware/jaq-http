@@ -1,5 +1,6 @@
 (ns jaq.http.server
   "Functional HTTP server."
+  (:gen-class)
   (:require
    [clojure.core.async :as async]
    [clojure.walk :as walk]
@@ -15,10 +16,11 @@
   (nio/serve port xrf))
 
 (defn -main [& args]
+  (System/setProperty "clojure.core.async.pool-size" "16")
   (->> (or
         (some-> env :PORT (Integer/parseInt))
         3000)
-       (serve app/main)
+       (serve app/echo)
        :shutdown
        (async/<!!)))
 

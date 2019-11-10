@@ -16,7 +16,7 @@
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:keys [index char finalized] :as x}]
+        ([acc x]
          (vswap! i inc)
          (rf acc {:index @i :char x}))))))
 

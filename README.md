@@ -42,25 +42,31 @@ The following API is provided in `jaq.http.client`:
 
 ### Server
 ```clojure
-(require '[jaq.http [server :as server][rf :as rf])
+(require '[jaq.http.server :as server])
+(require '[jaq.http.xrf.app :as app])
 
-;; start a sample server on port 8080
-(server/serve rf/main 8080)
+;; start a echo server on port 8080
+(server/serve app/echo 8080)
 ;; =>
 
+;; a http repl
+(server/serve app/repl 8080)
+;; =>
+
+;; see jaq.http.xrf.app for details
+(server/serve
+  (comp
+    app/http
+    (map (fn [{:keys [method path]
+              {:keys [host] :headers}}]
+          {:status 200 :headers {} :body (str "hi from " host)}))
+    8080)
 
 ```
 
 ### Client
 ```clojure
-(require '[jaq.http [client :as client][rf :as rf])
-
-;; simple request
-(client/request rf/main {:host "google.com" :path "/")
-;; =>
-
-;; eval w/ session
-(repl/session-repl {:input ":bar"})
+Not yet implemented.
 ;; =>
 
 
