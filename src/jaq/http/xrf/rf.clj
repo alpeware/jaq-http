@@ -1,4 +1,6 @@
-(ns jaq.http.xrf.rf)
+(ns jaq.http.xrf.rf
+  (:require
+   [taoensso.tufte :as tufte]))
 
 (def index
   (fn [rf]
@@ -9,6 +11,14 @@
         ([acc x]
          (vswap! i inc)
          (rf acc (transient {:index @i :char x})))))))
+
+(defn result-fn []
+  (let [result (volatile! nil)]
+    (fn
+      ([] @result)
+      ([acc] acc)
+      ([acc x] (vreset! result x) acc))))
+
 
 ;; TODO: credit original
 (defn branch

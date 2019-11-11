@@ -7,8 +7,12 @@ A minimal, idiomatic Clojure library for HTTP.
 In a cloud-centric, micro-service dominated world, HTTP is the common protocol
 to communicate between the different components of a system.
 
-This library is built from the ground up to depend only on Clojure including
-core.async and fully asynchronous using Java NIO primitives.
+This library is built from the ground up to depend only on Clojure and
+the JDK 11.
+
+It's fully asynchronous and leverages an event driven architecture using
+Java NIO primitives leveraging a Fork Join Worker pool for processing and
+Clojure's transducers primitives.
 
 
 ## Installation

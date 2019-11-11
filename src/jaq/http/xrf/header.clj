@@ -1,16 +1,45 @@
 (ns jaq.http.xrf.header
   (:require
-   [clojure.core.async :as async]
-   [clojure.edn :as edn]
-   [clojure.string :as string]
-   [clojure.java.io :as io]
-   [clojure.walk :as walk]
-   [net.cgrand.xforms :as x])
+   [jaq.http.xrf.rf :as rf]
+   [taoensso.tufte :as tufte])
   (:import
    [java.util Locale]))
 
 #_(
    (in-ns 'jaq.http.xrf.header)
+   (tufte/profile
+    {}
+    (let [buf "GET / HTTP/1.1\r\n "
+          rf (let [result (volatile! nil)]
+               (fn
+                 ([] @result)
+                 ([acc] acc)
+                 ([acc x] (vreset! result (persistent! x)) acc)))
+          xform (comp
+                 rf/index
+                 request-line)
+          xf (xform rf)]
+      (run! (fn [x] (tufte/p :xf (xf nil x))) buf)
+      (rf)))
+
+   (tufte/profile
+    {}
+    (let [buf "GET / HTTP/1.1\r\nHost: foobar\r\n\r\n"
+          rf (let [result (volatile! nil)]
+               (fn
+                 ([] @result)
+                 ([acc] acc)
+                 ([acc x] (vreset! result (persistent! x)) acc)))
+          xform (comp
+                 rf/index
+                 request-line
+                 headers)]
+      (doseq [i (range 100)]
+        (let [xf (xform rf)]
+          (run! (fn [x] (xf nil x)) buf)))
+      (rf)))
+
+
    )
 
 (def request-line
@@ -33,15 +62,20 @@
             (assoc-fn acc x)
 
             (= char \space)
-            (do
-              (->> @vacc (apply str) (keyword) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::method
+             (do
+               (->> @vacc (apply str) (keyword) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             :else
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::method
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
+
    (drop 1)
    (fn path [rf]
      (let [done (volatile! false)
@@ -63,15 +97,19 @@
             (or (= char \?)
                 (= char \#)
                 (= char \space))
-            (do
-              (->> @vacc (apply str) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::path
+             (do
+               (->> @vacc (apply str) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             :else
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::path
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
    (fn query [rf]
      (let [done (volatile! false)
            vacc (volatile! [])
@@ -93,21 +131,27 @@
              (empty? @vacc)
              (or (= char \space)
                  (= char \#)))
-            (do
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::query
+             (do
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             (or (= char \space)
                 (= char \#))
-            (do
-              (->> @vacc (apply str) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::query
+             (do
+               (->> @vacc (apply str) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             (not= char \?)
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::query
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
    (fn fragment [rf]
      (let [done (volatile! false)
            vacc (volatile! [])
@@ -133,15 +177,19 @@
               (assoc-fn acc x))
 
             (= char \space)
-            (do
-              (->> @vacc (apply str) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::fragment
+             (do
+               (->> @vacc (apply str) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             (not= char \#)
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::fragment
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
    (drop 1)
    (fn scheme [rf]
      (let [done (volatile! false)
@@ -161,15 +209,19 @@
             (assoc-fn acc x)
 
             (= char \/)
-            (do
-              (->> @vacc (apply str) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::scheme
+             (do
+               (->> @vacc (apply str) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             :else
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::scheme
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
    (drop 1)
    (fn minor [rf]
      (let [done (volatile! false)
@@ -189,15 +241,19 @@
             (assoc-fn acc x)
 
             (= char \.)
-            (do
-              (->> @vacc (apply str) (Integer/parseInt) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::minor
+             (do
+               (->> @vacc (apply str) (Integer/parseInt) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             :else
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::minor
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
    (drop 1)
    (fn major [rf]
      (let [done (volatile! false)
@@ -217,15 +273,19 @@
             (assoc-fn acc x)
 
             (= char \return)
-            (do
-              (->> @vacc (apply str) (Integer/parseInt) (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x))
+            (tufte/p
+             ::major
+             (do
+               (->> @vacc (apply str) (Integer/parseInt) (vreset! val))
+               (vreset! done true)
+               (assoc-fn acc x)))
 
             :else
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))
+            (tufte/p
+             ::major
+             (do
+               (vswap! vacc conj char)
+               (rf acc))))))))
    (drop 2)))
 
 #_(
@@ -250,8 +310,9 @@
          ([acc] (rf acc))
          ([acc {:keys [char] :as x}]
           (when-not @finalized
-            #_(prn @buf)
-            (vswap! buf (fn [val arg] (->> (conj val arg) (take-last 4) (vec))) char))
+            (tufte/p
+             ::finalized
+             (vswap! buf (fn [val arg] (->> (conj val arg) (take-last 4) (vec))) char)))
           (when (and (not @finalized)
                      (= (take-last 4 @buf) header-end))
             (vreset! finalized true))

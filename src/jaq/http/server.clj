@@ -2,7 +2,6 @@
   "Functional HTTP server."
   (:gen-class)
   (:require
-   [clojure.core.async :as async]
    [clojure.walk :as walk]
    [jaq.http.server.nio :as nio]
    [jaq.http.xrf.app :as app]))
@@ -12,17 +11,24 @@
        (into {})
        (walk/keywordize-keys)))
 
+(defn register! []
+  (Thread/setDefaultUncaughtExceptionHandler
+   (reify Thread$UncaughtExceptionHandler
+     (uncaughtException [_ thread ex]
+       (prn ex "Uncaught exception on" (.getName thread))))))
+
 (defn serve [port xrf]
   (nio/serve port xrf))
 
 (defn -main [& args]
-  (System/setProperty "clojure.core.async.pool-size" "16")
+  (register!)
   (->> (or
         (some-> env :PORT (Integer/parseInt))
         3000)
        (serve app/repl)
-       :shutdown
-       (async/<!!)))
+       :future
+       (deref)))
+
 
 #_(
    *ns*

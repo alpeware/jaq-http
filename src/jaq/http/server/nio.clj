@@ -1,29 +1,24 @@
 (ns jaq.http.server.nio
   (:gen-class)
   (:require
-   [clojure.core.async :as async]
-   [clojure.edn :as edn]
-   [clojure.walk :as walk]
-   [jaq.http.xrf.app :as app])
+   [taoensso.tufte :as tufte]
+   [jaq.async.fj :as fj]
+   [jaq.http.xrf.app :as app]
+   [jaq.http.xrf.rf :as rf])
   (:import
    [java.io IOException]
-   [java.net URLDecoder URI]
    [java.net InetSocketAddress ServerSocket Socket]
    [java.nio.charset StandardCharsets Charset]
    [java.nio.channels
     ServerSocketChannel Selector SelectionKey SocketChannel SelectableChannel]
    [java.nio.channels.spi AbstractSelectableChannel]
-   [java.nio ByteBuffer CharBuffer]
-   [java.util UUID Locale]
-   [java.util.concurrent ArrayBlockingQueue ThreadPoolExecutor TimeUnit]))
+   [java.nio ByteBuffer CharBuffer]))
 
 (set! *warn-on-reflection* true)
 
 (def ^:dynamic *http-server* nil)
 
 (def ^:dynamic *app-xrf* nil)
-
-(def ^:dynamic *chan-buf* 1)
 
 (def pending-connections (* 16 1024))
 (def socket-buffer-size (* 16 1024))
@@ -32,17 +27,6 @@
 (def ^Charset charset StandardCharsets/UTF_8)
 
 (def ^ByteBuffer read-buffer (ByteBuffer/allocateDirect buffer-size))
-
-(def env
-  (->> (System/getenv)
-       (into {})
-       (walk/keywordize-keys)))
-
-(defn uuid []
-  (->
-   (UUID/randomUUID)
-   (str)
-   (keyword)))
 
 (defn non-blocking [^AbstractSelectableChannel channel]
   (.configureBlocking channel false))
@@ -55,6 +39,13 @@
   (doto (.socket ssc)
     (.setReuseAddress true)
     (.setReceiveBufferSize socket-buffer-size)))
+
+(defn client-socket [^Socket socket]
+  (doto socket
+    (.setTcpNoDelay true)
+    (.setReceiveBufferSize socket-buffer-size)
+    (.setSendBufferSize socket-buffer-size)
+    (.setReuseAddress true)))
 
 (defn bind [^ServerSocket ss port backlog]
   (.bind ss (InetSocketAddress. port) backlog))
@@ -74,175 +65,151 @@
 (defn ^SelectionKey readable [^Selector selector ^SocketChannel channel]
   (.register channel selector SelectionKey/OP_READ))
 
-(defn ^String response [{:keys [status headers body]}]
-  (->> ["HTTP/1.1" " " status " " "OK" "\r\n"
-        ;;"Host: " (:host headers) "\r\n"
-        ;;"Date: Sat, 02 Nov 2019 21:16:00 GMT" "\r\n"
-        "Content-type: text/plain" "\r\n"
-        "Connection: close" "\r\n"
-        "Content-length: " (count body) "\r\n"
-        "\r\n"
-        body]
-       (apply str)))
-
 (defn write-channel [^SocketChannel channel ^ByteBuffer bytes]
   (.write channel bytes))
 
-(defn close! [ch]
-  (when ch
-    (async/close! ch)))
+(defn read-channel [^SocketChannel channel ^ByteBuffer buf]
+  (.read channel buf))
 
+;; TODO: remove?
+;; TODO: investigate wait for state connected?
 (defn ^SelectionKey exchange [^SelectionKey channel-key]
-  (let [^SocketChannel channel (.channel channel-key)
-        req (async/chan *chan-buf*)
-        ;;ch (async/chan *chan-buf* *app-xrf* (fn [e] (prn ::exception e) {:exception e}))
-        ch (async/chan *chan-buf*)]
-
-    (async/thread
-      (let [acc []
-            rf (fn
-                 ([acc]) acc
-                 ([acc x] (conj acc x)))
-            xf (*app-xrf* rf)]
-        (when-let [buf (async/<!! req)]
-          (doseq [x buf]
-            (let [r (xf x)]
-              (when (reduced r)
-                (async/>!! ch r)))))))
-
-    ;; req
-    (async/go-loop []
-      (when-let [buf (async/<! req)]
-        (async/onto-chan ch buf false)
-        (recur)))
-
-    ;; res
-    (async/go
-      (let [res (async/<! ch)
-            buf (-> res
-                    (response)
-                    ^String (.getBytes charset)
-                    (ByteBuffer/wrap))]
-        (close! req)
-        (close! ch)
-        (->> buf
-             (.attach channel-key))
-        (.interestOps channel-key SelectionKey/OP_WRITE)
-        (-> channel-key (.selector) (.wakeup))))
-
-    (->> req
+  (let [^SocketChannel channel (.channel channel-key)]
+    (->> {:state :connected}
          (.attach channel-key))
-
     channel-key))
 
+(defn reader-task [^SelectionKey channel-key]
+  (->
+   (fn []
+     (let [{:keys [^ByteBuffer in xf]
+            :or {xf (*app-xrf* (rf/result-fn))}} (.attachment channel-key)]
+       (run! (fn [x] (xf nil x)) in)
+       (if-let [buf (some-> (xf))]
+         (do ;; enough input to produce a response
+           (.attach channel-key {:state :processed :out buf})
+           (.interestOps channel-key SelectionKey/OP_WRITE)
+           (-> channel-key (.selector) (.wakeup)))
+         (do ;; need more input so store current xf state
+           (.attach channel-key {:state :reading :xf xf})))))
+   (fj/task)
+   (fj/fork)))
+
+#_(
+   *ns*
+   (in-ns 'jaq.http.server.nio)
+   *e
+   )
 
 (defn read! [^SelectionKey channel-key]
-  (let [req (.attachment channel-key)
-        ^SocketChannel channel (.channel channel-key)]
-    (when req
-      (try
-        (let [n (->> read-buffer
-                     (.clear)
-                     (.read channel))]
-          (.flip read-buffer)
-          (cond
-            (< n 0) ;; end of stream
-            (do
-              (.interestOps channel-key 0)
-              (close! req))
-
-            (> n 0) ;; read some bytes
-            (->> read-buffer
-                 ^CharBuffer (. charset decode)
-                 (.asReadOnlyBuffer)
-                 (async/>!! req))))
-        (catch IOException e
-          (close! req)
-          (prn ::client ::socket ::io e))
-        (catch IllegalStateException e
-          (close! req)
-          (prn ::client ::socket ::wrong ::state e))))))
-
-(defn write! [^SelectionKey channel-key]
-  (let [^ByteBuffer buf (.attachment channel-key)
+  (let [;;{:keys [state]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (try
-      (let [n (.write channel buf)
-            r (.remaining buf)]
-        (if (= r 0) ;; end of buf
+      (let [n (->> read-buffer
+                   (.clear)
+                   (read-channel channel))]
+        (.flip read-buffer)
+        (cond
+          (< n 0) ;; end of stream
           (do
-            (.close channel)
+            (.interestOps channel-key 0)
             (.cancel channel-key))
 
-          (do
-            (.interestOps channel-key SelectionKey/OP_WRITE)
-            (-> channel-key (.selector) (.wakeup)))))
+          (> n 0) ;; read some bytes
+          (let [bb (->> read-buffer
+                        ^CharBuffer (. charset decode)
+                        (.asReadOnlyBuffer))]
+            (.attach channel-key {:in bb})
+            (tufte/p
+             ::fork
+             (reader-task channel-key))
+
+            #_(->> {:state :read}
+                 (.attach channel-key)))))
       (catch IOException e
         (prn ::client ::socket ::io e))
       (catch IllegalStateException e
         (prn ::client ::socket ::wrong ::state e)))))
 
-(defn client-socket [^Socket socket]
-  (doto socket
-    (.setTcpNoDelay true)
-    (.setReceiveBufferSize socket-buffer-size)
-    (.setSendBufferSize socket-buffer-size)
-    (.setReuseAddress true)))
+(defn write! [^SelectionKey channel-key]
+  (let [{:keys [^ByteBuffer out]} (.attachment channel-key)
+        ^SocketChannel channel (.channel channel-key)]
+    (when out
+      (try
+        (let [n (write-channel channel out)
+              r (.remaining out)]
+          (if (= r 0) ;; end of buf
+            (do
+              (.close channel)
+              (.cancel channel-key))
+
+            (do
+              (.interestOps channel-key SelectionKey/OP_WRITE)
+              (-> channel-key (.selector) (.wakeup)))))
+        (catch IOException e
+          (prn ::client ::socket ::io e))
+        (catch IllegalStateException e
+          (prn ::client ::socket ::wrong ::state e))))))
 
 (defn accept! [ssc client-selector]
   (some->> ssc
            (client-channel)
            (readable client-selector)
-           (exchange)))
+           #_(exchange)))
+
+;; TODO: batch all reads per event loop
+;; TODO: fork multiple selectors
+(defn reactor-loop [^ServerSocketChannel ssc ^Selector main-selector]
+  (tufte/p
+   ::selector
+   (let [ready (select main-selector)]
+     (when (> ready 0)
+       (let [it (-> main-selector (.selectedKeys) (.iterator))]
+         (loop []
+           (when (.hasNext it)
+             (let [^SelectionKey channel-key (.next it)]
+               (.remove it)
+               (cond
+                 (not (.isValid channel-key))
+                 (.cancel channel-key)
+
+                 (.isAcceptable channel-key)
+                 (accept! ssc main-selector)
+
+                 (.isReadable channel-key)
+                 (read! channel-key)
+
+                 (.isWritable channel-key)
+                 (write! channel-key)))
+             (recur))))))))
+
+#_(
+   *ns*
+   *e
+   (defonce stats-acc
+     (tufte/add-accumulating-handler! {:ns-pattern "*"}))
+   (tufte/profile
+    {:id :test}
+    *ns*)
+   (def s (->> @stats-acc :selector (deref)))
+   (->> @stats-acc
+        :main
+        (tufte/format-grouped-pstats))
+   )
 
 (defn serve [xrf port]
   (let [ssc (server-channel)
         socket (socket ssc)
         main-selector (selector)
         listener-keys (listener ssc main-selector)
-        shutdown (async/chan)
-        shutdown-mult (async/mult shutdown)
-        main-shutdown (async/chan)]
+        shutdown (volatile! false)]
     ;; app
     (alter-var-root
      #'*app-xrf* (constantly xrf))
-    ;; shutdown hooks
-    (async/tap shutdown-mult main-shutdown)
     ;; bind
     (bind socket port pending-connections)
     ;; reactor pattern
     ;; see http://gee.cs.oswego.edu/dl/cpjslides/nio.pdf
-    (async/thread
-      (loop []
-        (if (async/poll! main-shutdown)
-          (try
-            ;; TODO: doesn't free the port
-            (prn ::accept ::shutdown)
-            (.close main-selector)
-            (.close ssc)
-            (.close socket)
-            (catch IOException _))
-          (let [ready (select main-selector)]
-            (when (> ready 0)
-              (let [it (-> main-selector (.selectedKeys) (.iterator))]
-                (loop []
-                  (when (.hasNext it)
-                    (let [^SelectionKey channel-key (.next it)]
-                      (.remove it)
-                      (cond
-                        (not (.isValid channel-key))
-                        (.cancel channel-key)
-
-                        (.isAcceptable channel-key)
-                        (accept! ssc main-selector)
-
-                        (.isReadable channel-key)
-                        (read! channel-key)
-
-                        (.isWritable channel-key)
-                        (write! channel-key)))
-                    (recur)))))
-            (recur)))))
     (prn ::server ::listening port)
     (alter-var-root
      #'*http-server*
@@ -251,14 +218,29 @@
        :ssc ssc
        :socket socket
        :main-selector main-selector
-       :shutdown shutdown}))))
+       :shutdown-fn (fn [] (vreset! shutdown true))
+       :future (future
+                 (try
+                   (do
+                     (loop []
+                       (when-not @shutdown
+                         (reactor-loop ssc main-selector)
+                         (recur)))
+                     (try
+                       ;; TODO: doesn't free the port?
+                       (prn ::accept ::shutdown)
+                       (.close main-selector)
+                       (.close ssc)
+                       (.close socket)
+                       (catch IOException _)))
+                   (catch Exception e
+                     (prn ::event ::loop e))))}))))
 
 #_(
    *ns*
    (require 'jaq.http.server.nio :reload)
    (in-ns 'jaq.http.server.nio)
-
-   (set! *compile-path* "foo")
+   *http-server*
    *e
 
    (def http-server
@@ -266,26 +248,18 @@
    (.close (::ssc http-server))
 
    (slurp "http://localhost:10010/")
-   (async/>!! (::shutdown http-server) :shutdown)
 
-   *e
-   s
    (slurp (java.io.FileReader. "/proc/sys/net/core/rmem_max"))
 
    (require 'clojure.repl)
    (clojure.repl/doc alter-var-root)
 
-   (alter-var-root #'*http-server* (constantly :foo))
-
    )
 
 (defn -main [& args]
-  (->> (or
-        (some-> env :PORT (edn/read-string))
-        3000)
-       (serve app/main)
-       :shutdown
-       (async/<!!)))
+  (->> (serve app/main 3000)
+       :future
+       (deref)))
 
 #_(
    *ns*

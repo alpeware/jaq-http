@@ -1,17 +1,15 @@
 (ns jaq.http.xrf.app
   (:require
-   [clojure.core.async :as async]
-   [clojure.edn :as edn]
-   [clojure.string :as string]
-   [clojure.java.io :as io]
    [clojure.walk :as walk]
    [jaq.repl :as r]
    [jaq.http.xrf.header :as header]
    [jaq.http.xrf.params :as params]
+   [jaq.http.xrf.response :as response]
    [jaq.http.xrf.rf :as rf]
+   [taoensso.tufte :as tufte]
    [net.cgrand.xforms :as x])
   (:import
-   [java.util UUID Locale]))
+   [java.util UUID]))
 
 (def env
   (->> (System/getenv)
@@ -36,16 +34,30 @@
    header/request-line
    header/headers
    (map (fn [x]
-          {:status 200 :headers {} :body "echo"}))))
+          {:status 200 :headers {} :body "echo"}))
+   response/plain))
+
+#_(
+   (in-ns 'jaq.http.xrf.app)
+   (tufte/profile
+    {}
+    (let [buf "GET / HTTP/1.1\r\nHost: jaq\r\n\r\n"
+          rf (let [result (volatile! nil)]
+               (fn
+                 ([] @result)
+                 ([acc] acc)
+                 ([acc x] (vreset! result x) acc)))
+          xf (echo rf)]
+      (run! (fn [x] (tufte/p :xf (xf nil x))) buf)
+      (rf)))
+   *e
+   )
 
 (def repl
   (comp
    rf/index
    header/request-line
    header/headers
-   #_(map (fn [x]
-            (prn x)
-            x))
    (x/multiplex
     [(comp
       (filter (fn [{:keys [path]}]
@@ -94,7 +106,8 @@
               :body (str "You are from " x-appengine-city " in "
                          x-appengine-region " / " x-appengine-country "."
                          " Your IP is " x-appengine-user-ip " and your trace is "
-                         x-cloud-trace-context ".")})))])))
+                         x-cloud-trace-context ".")})))])
+   response/plain))
 
 (def counter
   (let [cnt (volatile! 0)]

@@ -1,7 +1,6 @@
 {:paths ["src" "classes"]
  :mvn/local-repo "./.m2"
  :deps {org.clojure/clojure {:mvn/version "1.10.1"}
-        org.clojure/core.async {:mvn/version "0.4.500"}
         com.taoensso/tufte {:mvn/version "2.1.0"}
         com.alpeware/jaq-repl {:git/url "https://github.com/alpeware/jaq-repl"
                                :sha "a01f8db75944d8066865f482b2b1383090ed78e7"}
