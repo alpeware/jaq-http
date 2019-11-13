@@ -6,7 +6,7 @@
                                :sha "a01f8db75944d8066865f482b2b1383090ed78e7"}
         net.cgrand/xforms {:mvn/version "0.19.2" :exclusions [org.clojure/clojurescript org.clojure/clojure]}}
  :aliases {:b
-           {:extra-paths ["build"]
+           {:extra-paths ["scripts"]
             :main-opts ["-m" "build"]}
            :m
            {:main-opts ["-m" "jaq.http.server"]}
@@ -16,5 +16,6 @@
             ;; profiling setup https://github.com/google/pprof/issues/346#issuecomment-378119331
             :jvm-opts ["-agentpath:./profiler_java_agent.so=-logtostderr,-cprof_profile_filename=./profiles/profile_,-cprof_enable_heap_sampling,-cprof_interval_sec=5,-cprof_duration_sec=10"]}
            :t
-           {:extra-paths ["test"]
-            :main-opts ["-m" "jaq.http.test-server"]}}}
+           {:extra-deps {org.clojure/test.check {:mvn/version "0.10.0"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jaq.test"]}}}

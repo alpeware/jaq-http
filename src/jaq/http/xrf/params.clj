@@ -5,9 +5,14 @@
     (let [decode (volatile! false)
           vacc (volatile! [])
           length (volatile! 0)
-          rf-state (volatile! {:decode false
-                               :acc []})
-          ]
+          assoc-fn (fn [acc x content-length c]
+                     (if (and content-length
+                              (= @length content-length))
+                       (do
+                         (->> (conj! x {:char c :eob true})
+                              (rf acc)))
+                       (->> (assoc! x :char c)
+                            (rf acc))))]
       (fn
         ([] (rf))
         ([acc] (rf acc))
@@ -15,14 +20,16 @@
                {:keys [content-length]} :headers
                :as x}]
          (vswap! length inc)
+         #_(prn index char @length content-length)
          (cond
            (= char \+)
-           (->> (assoc! x :char \space)
-                (rf acc))
+           (assoc-fn acc x content-length \space)
 
            (= char \&)
-           (->> (assoc! x :char :sep)
-                (rf acc))
+           (assoc-fn acc x content-length :sep)
+
+           (= char \=)
+           (assoc-fn acc x content-length :assign)
 
            (= char \%)
            (do
@@ -41,15 +48,14 @@
                        (-> e
                            (Integer/parseInt 16)
                            (clojure.core/char))))
-                    (assoc! x :char)
-                    (rf acc))
+                    (assoc-fn acc x content-length))
                (rf acc)))
 
            :else
-           (rf acc x))
-         (when (= @length (Integer/parseInt content-length))
-           (->> (assoc! x :char :eof)
-                (rf acc))))))))
+           (assoc-fn acc x content-length char))
+         #_(when (= @length content-length)
+             (->> (assoc! x :char :eof)
+                  (rf acc))))))))
 
 #_(
    *ns*
@@ -86,12 +92,10 @@
        (fn
          ([] (rf))
          ([acc] (rf acc))
-         ([acc {:keys [index char]
-
+         ([acc {:keys [index char eob]
                 :as x}]
           (cond
-            (and (= char \=)
-                 (not @param-name))
+            (= char :assign)
             (do
               (->> @vacc
                    (apply str)
@@ -101,8 +105,7 @@
               (vreset! param-name true)
               (rf acc))
 
-            (and (or (= char :sep) (= char :eof))
-                 @val)
+            (and (= char :sep) @val)
             (let [pk @val
                   pv (->> @vacc (apply str))]
               (vswap! params-map conj {pk pv})
@@ -110,9 +113,17 @@
               (vreset! param-name false)
               (vreset! vacc [])
               (vreset! val nil)
-              (if (= char :eof)
-                (assoc-fn acc x)
-                (rf acc)))
+              (rf acc))
+
+            (and eob @val)
+            (let [pk @val
+                  pv (->> (conj @vacc char) (apply str))]
+              (vswap! params-map conj {pk pv})
+              (vreset! done false)
+              (vreset! param-name false)
+              (vreset! vacc [])
+              (vreset! val nil)
+              (assoc-fn acc x))
 
             :else
             (do

@@ -19,7 +19,6 @@
       ([acc] acc)
       ([acc x] (vreset! result x) acc))))
 
-
 ;; TODO: credit original
 (defn branch
   "Will route data down one or another transducer path based on a predicate

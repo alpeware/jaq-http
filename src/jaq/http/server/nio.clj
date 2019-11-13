@@ -218,23 +218,26 @@
        :ssc ssc
        :socket socket
        :main-selector main-selector
-       :shutdown-fn (fn [] (vreset! shutdown true))
+       :shutdown-fn (fn [] (vreset! shutdown true) (.wakeup main-selector))
        :future (future
-                 (try
-                   (do
-                     (loop []
-                       (when-not @shutdown
-                         (reactor-loop ssc main-selector)
-                         (recur)))
-                     (try
-                       ;; TODO: doesn't free the port?
-                       (prn ::accept ::shutdown)
-                       (.close main-selector)
-                       (.close ssc)
-                       (.close socket)
-                       (catch IOException _)))
-                   (catch Exception e
-                     (prn ::event ::loop e))))}))))
+                 (do
+                   (try
+                     (do
+                       (loop []
+                         (when-not @shutdown
+                           (reactor-loop ssc main-selector)
+                           (recur)))
+                       (try
+                         ;; TODO: doesn't free the port?
+                         (prn ::accept ::shutdown)
+                         (.close main-selector)
+                         (.close ssc)
+                         (.close socket)
+                         (catch IOException e
+                           (prn ::shutdown e))))
+                     (catch Exception e
+                       (prn ::event ::loop e)))
+                   (prn ::done)))}))))
 
 #_(
    *ns*

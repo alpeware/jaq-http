@@ -75,7 +75,6 @@
              (do
                (vswap! vacc conj char)
                (rf acc))))))))
-
    (drop 1)
    (fn path [rf]
      (let [done (volatile! false)
@@ -368,7 +367,9 @@
             (and (= char \return)
                  @val)
             (let [hk @val
-                  hv (->> @vacc (apply str))]
+                  hv (if (= hk :content-length)
+                       (->> @vacc (apply str) (Integer/parseInt))
+                       (->> @vacc (apply str)))]
               (vreset! val {hk hv})
               (vreset! done true)
               (rf acc))
