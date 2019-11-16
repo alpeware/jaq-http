@@ -10,7 +10,7 @@
         ([acc] (rf acc))
         ([acc x]
          (vswap! i inc)
-         (rf acc (transient {:index @i :char x})))))))
+         (rf acc {:index @i :char x}))))))
 
 (defn result-fn []
   (let [result (volatile! nil)]

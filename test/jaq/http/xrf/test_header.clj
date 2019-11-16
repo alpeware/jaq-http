@@ -1,23 +1,19 @@
 (ns jaq.http.xrf.test-header
   (:require
+   [clojure.test.check :as tc]
+   [clojure.test.check.clojure-test :refer [defspec]]
+   [clojure.test.check.generators :as gen]
+   [clojure.test.check.properties :as prop]
    [clojure.test :refer :all]
+   [com.gfredericks.test.chuck.clojure-test :refer [for-all]]
+   [com.gfredericks.test.chuck :as chuck]
    [taoensso.tufte :as tufte]
    [jaq.http.xrf.header :as header]
-   [jaq.http.xrf.rf :as rf]))
-
-#_(
-   (let [buf "GET / HTTP/1.1\r\n "
-         rf (let [result (volatile! nil)]
-              (fn
-                ([] @result)
-                ([acc] acc)
-                ([acc x] (vreset! result (persistent! x)) acc)))
-         xform (comp
-                rf/index
-                request-line)
-         xf (xform rf)]
-     (run! (fn [x] (tufte/p :xf (xf nil x))) buf)
-     (rf)))
+   [jaq.http.xrf.params :as params]
+   [jaq.http.xrf.rf :as rf])
+  (:import
+   [java.net URLDecoder URLEncoder]
+   [java.nio.charset StandardCharsets]))
 
 (defn run [xform buf]
   (let [xf ((comp
@@ -36,21 +32,48 @@
       (is (= minor 1))
       (is (= scheme "HTTP")))))
 
-(deftest test-request-line-query
-  (let [buf "GET /?foo HTTP/1.1\r\n "
-        xform header/request-line]
-    (let [{:keys [query] :as m} (run xform buf)]
-      (is (and
-           (= query "foo"))))))
+(deftest test-request-query
+  (let [buf "?foo=&baz=bazz "
+        xform (comp
+               rf/index
+               header/query)]
+    (let [{:keys [params] :as m} (->> (sequence xform buf) (first))]
+      (is (= params {:foo nil :baz "bazz"})))))
 
-;;TODO: add query params
+(defspec check-request-query 100
+  (for-all [original (gen/let [ms (-> (fn [[k v]]
+                                        {k (if (clojure.string/blank? v) nil v)})
+                                      (gen/fmap
+                                       (gen/tuple gen/keyword
+                                                  gen/string-alphanumeric))
+                                      (gen/vector))]
+                       (apply merge ms))]
+           (let [encode-fn (fn [s]
+                             (if (nil? s)
+                               nil
+                               (URLEncoder/encode s (.name params/default-charset))))
+                 encoded (->> original
+                              (map (fn [[k v]]
+                                     (str (encode-fn (name k))
+                                          "=" (encode-fn v))))
+                              (clojure.string/join "&"))
+                 xform (comp
+                        jaq.http.xrf.rf/index
+                        header/query)
+                 buf (str "?" encoded " ")
+                 decoded (->> (sequence xform buf) (first) :params)]
+             (is (= original decoded)))))
+
+#_(
+   *e
+   (run-tests)
+   )
 
 (deftest test-request-line-fragment
   (let [buf "GET /#foo HTTP/1.1\r\n "
         xform header/request-line]
     (let [{:keys [fragment] :as m} (run xform buf)]
-      (is (and
-           (= fragment "foo"))))))
+      (is (= fragment "#foo")))))
 
 (deftest test-headers-basic
   (let [buf "Host: alpeware\r\nContent-Type: plain/text\r\n\r\n"
@@ -71,9 +94,11 @@
     (let [{{:keys [content-length]} :headers :as m} (run xform buf)]
       (is (= content-length 123)))))
 
+
 #_(
    *e
    *ns*
+   (require 'jaq.http.xrf.test-header :reload)
    (in-ns 'jaq.http.xrf.test-header)
    ;; run all tests
    (run-tests)
@@ -84,6 +109,6 @@
         (keys))
 
    ;; unmap var
-   (ns-unmap *ns* 'test-request-line)
+   (ns-unmap *ns* 'test-request-line-query)
 
    )

@@ -67,7 +67,7 @@
       (filter (fn [{{:keys [content-type]} :headers}]
                 (= content-type "application/x-www-form-urlencoded")))
       (drop 1)
-      params/params
+      params/body
       (rf/branch (fn [{{input :form session-id :device-id :keys [repl-token]} :params}]
                    (and (= repl-token (or (:JAQ-REPL-TOKEN env) "foobarbaz"))))
                  (comp

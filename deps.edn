@@ -16,6 +16,7 @@
             ;; profiling setup https://github.com/google/pprof/issues/346#issuecomment-378119331
             :jvm-opts ["-agentpath:./profiler_java_agent.so=-logtostderr,-cprof_profile_filename=./profiles/profile_,-cprof_enable_heap_sampling,-cprof_interval_sec=5,-cprof_duration_sec=10"]}
            :t
-           {:extra-deps {org.clojure/test.check {:mvn/version "0.10.0"}}
+           {:extra-deps {org.clojure/test.check {:mvn/version "0.10.0"}
+                         com.gfredericks/test.chuck {:mvn/version "0.2.10"}}
             :extra-paths ["test"]
-            :main-opts ["-m" "jaq.test"]}}}
+            :main-opts ["-m" "jaq.http.server"]}}}
