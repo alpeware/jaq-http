@@ -79,22 +79,6 @@
          (.attach channel-key))
     channel-key))
 
-(defn reader-task [^SelectionKey channel-key]
-  (->
-   (fn []
-     (let [{:keys [^ByteBuffer in xf]
-            :or {xf (*app-xrf* (rf/result-fn))}} (.attachment channel-key)]
-       (run! (fn [x] (xf nil x)) in)
-       (if-let [buf (some-> (xf))]
-         (do ;; enough input to produce a response
-           (.attach channel-key {:state :processed :out buf})
-           (.interestOps channel-key SelectionKey/OP_WRITE)
-           (-> channel-key (.selector) (.wakeup)))
-         (do ;; need more input so store current xf state
-           (.attach channel-key {:state :reading :xf xf})))))
-   (fj/task)
-   (fj/fork)))
-
 #_(
    *ns*
    (in-ns 'jaq.http.server.nio)
@@ -119,13 +103,27 @@
           (let [bb (->> read-buffer
                         ^CharBuffer (. charset decode)
                         (.asReadOnlyBuffer))]
-            (.attach channel-key {:in bb})
-            (tufte/p
-             ::fork
-             (reader-task channel-key))
+            (.attach channel-key {:in bb :state :process})
+            channel-key
+            ;; inline read
+            #_(let [{:keys [^ByteBuffer in xf]
+                     :or {xf (*app-xrf* (rf/result-fn))}} (.attachment channel-key)]
+                (run! (fn [x] (xf nil x)) in)
+                (if-let [buf (some-> (xf))]
+                  (do ;; enough input to produce a response
+                    (.attach channel-key {:state :processed :out buf})
+                    (.interestOps channel-key SelectionKey/OP_WRITE)
+                    (-> channel-key (.selector) (.wakeup)))
+                  (do ;; need more input so store current xf state
+                    (.attach channel-key {:state :reading :xf xf}))))
+
+            ;; fork each read
+            #_(tufte/p
+               ::fork
+               (reader-task channel-key))
 
             #_(->> {:state :read}
-                 (.attach channel-key)))))
+                   (.attach channel-key)))))
       (catch IOException e
         (prn ::client ::socket ::io e))
       (catch IllegalStateException e
@@ -157,7 +155,58 @@
            (readable client-selector)
            #_(exchange)))
 
-;; TODO: batch all reads per event loop
+(defn reader-task [^SelectionKey channel-key]
+  (->
+   (fn []
+     (let [{:keys [^ByteBuffer in xf]
+            :or {xf (*app-xrf* (rf/result-fn))}} (.attachment channel-key)]
+       (run! (fn [x] (xf nil x)) in)
+       (if-let [buf (some-> (xf))]
+         (do ;; enough input to produce a response
+           (.attach channel-key {:state :processed :out buf})
+           (.interestOps channel-key SelectionKey/OP_WRITE)
+           (-> channel-key (.selector) (.wakeup)))
+         (do ;; need more input so store current xf state
+           (.attach channel-key {:state :reading :xf xf})))))
+   (fj/task)
+   (fj/fork)))
+
+(defn process [channel-keys]
+  (doseq [^SelectionKey channel-key channel-keys]
+    (let [{:keys [^ByteBuffer in
+                  ^ByteBuffer out
+                  state xf]
+           :or {xf (*app-xrf* (rf/result-fn))}} (.attachment channel-key)]
+      (condp = state
+        :process
+        (do
+          (run! (fn [x] (xf nil x)) in)
+          (if-let [buf (some-> (xf))]
+            (do ;; enough input to produce a response
+              (.attach channel-key {:state :processed :out buf})
+              (.interestOps channel-key SelectionKey/OP_WRITE)
+              (-> channel-key (.selector) (.wakeup)))
+            (do ;; need more input so store current xf state
+              (.attach channel-key {:state :reading :xf xf}))))
+
+        :processed
+        (write! channel-key)
+        :noop))))
+
+(defn process-reads [channel-keys]
+  (if (> (count channel-keys) 15)
+    ;; fork
+    (->> channel-keys
+         (partition 20)
+         (map (fn [block]
+                (-> (fn [] (process block))
+                    #_(fj/invoke)
+                    (fj/task)
+                    (fj/fork))))
+         (dorun))
+    ;; just do the work
+    (process channel-keys)))
+
 ;; TODO: fork multiple selectors
 (defn reactor-loop [^ServerSocketChannel ssc ^Selector main-selector]
   (tufte/p
@@ -165,27 +214,34 @@
    (let [ready (select main-selector)]
      (when (> ready 0)
        (let [it (-> main-selector (.selectedKeys) (.iterator))]
-         (loop []
-           (when (.hasNext it)
-             (let [^SelectionKey channel-key (.next it)]
-               (.remove it)
-               (cond
-                 (not (.isValid channel-key))
-                 (.cancel channel-key)
+         (loop [channel-keys []]
+           (let [^SelectionKey channel-key (.next it)
+                 read-key (cond
+                            (not (.isValid channel-key))
+                            (.cancel channel-key)
 
-                 (.isAcceptable channel-key)
-                 (accept! ssc main-selector)
+                            (.isAcceptable channel-key)
+                            (accept! ssc main-selector)
 
-                 (.isReadable channel-key)
-                 (read! channel-key)
+                            (.isReadable channel-key)
+                            (read! channel-key)
 
-                 (.isWritable channel-key)
-                 (write! channel-key)))
-             (recur))))))))
+                            (.isWritable channel-key)
+                            channel-key)
+                 channel-keys (if read-key
+                                (conj channel-keys read-key)
+                                channel-keys)]
+             (.remove it)
+             (if-not (.hasNext it)
+               channel-keys
+               (recur channel-keys)))))))))
 
 #_(
    *ns*
+   (in-ns 'jaq.http.server.nio)
    *e
+   (zero? (bit-and 4 SelectionKey/OP_READ))
+
    (defonce stats-acc
      (tufte/add-accumulating-handler! {:ns-pattern "*"}))
    (tufte/profile
@@ -210,7 +266,6 @@
     (bind socket port pending-connections)
     ;; reactor pattern
     ;; see http://gee.cs.oswego.edu/dl/cpjslides/nio.pdf
-    (prn ::server ::listening port)
     (alter-var-root
      #'*http-server*
      (constantly
@@ -223,9 +278,11 @@
                  (do
                    (try
                      (do
+                       (prn ::server ::listening port)
                        (loop []
                          (when-not @shutdown
-                           (reactor-loop ssc main-selector)
+                           (-> (reactor-loop ssc main-selector)
+                               (process-reads))
                            (recur)))
                        (try
                          ;; TODO: doesn't free the port?
