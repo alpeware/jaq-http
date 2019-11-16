@@ -19,4 +19,22 @@
            {:extra-deps {org.clojure/test.check {:mvn/version "0.10.0"}
                          com.gfredericks/test.chuck {:mvn/version "0.2.10"}}
             :extra-paths ["test"]
-            :main-opts ["-m" "jaq.http.server"]}}}
+            :main-opts ["-m" "jaq.http.server"]}
+           ;; for benchmarking
+           :aleph
+           {:extra-paths ["scripts"]
+            :extra-deps {aleph {:mvn/version "0.4.6"}}
+            :main-opts ["-m" "aleph"]}
+           :http-kit
+           {:extra-paths ["scripts"]
+            :extra-deps {http-kit {:mvn/version "2.3.0"}}
+            :main-opts ["-m" "http-kit"]}
+           :metosin
+           {:extra-paths ["scripts"]
+            :extra-deps {metosin/pohjavirta {:mvn/version "0.0.1-alpha5"}}
+            :main-opts ["-m" "metosin"]}
+           :jetty
+           {:extra-paths ["scripts"]
+            :extra-deps {ring/ring-core {:mvn/version "1.8.0"}
+                         ring/ring-jetty-adapter {:mvn/version "1.8.0"}}
+            :main-opts ["-m" "jetty"]}}}
