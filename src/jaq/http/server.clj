@@ -25,9 +25,7 @@
   (->> (or
         (some-> env :PORT (Integer/parseInt))
         3000)
-       (serve app/repl)
-       :future
-       (deref)))
+       (serve app/repl)))
 
 #_(
    *ns*

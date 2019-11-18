@@ -26,7 +26,7 @@
 
 (def ^Charset charset StandardCharsets/UTF_8)
 
-(def ^ByteBuffer read-buffer (ByteBuffer/allocateDirect buffer-size))
+#_(def ^ByteBuffer read-buffer (ByteBuffer/allocateDirect buffer-size))
 
 (defn non-blocking [^AbstractSelectableChannel channel]
   (.configureBlocking channel false))
@@ -65,6 +65,9 @@
 (defn ^SelectionKey readable [^Selector selector ^SocketChannel channel]
   (.register channel selector SelectionKey/OP_READ))
 
+(defn ^SelectionKey connectable [^Selector selector ^SocketChannel channel]
+  (.register channel selector SelectionKey/OP_CONNECT))
+
 (defn write-channel [^SocketChannel channel ^ByteBuffer bytes]
   (.write channel bytes))
 
@@ -85,7 +88,7 @@
    *e
    )
 
-(defn read! [^SelectionKey channel-key]
+(defn read! [^ByteBuffer read-buffer ^SelectionKey channel-key]
   (let [;;{:keys [state]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (try
@@ -132,7 +135,7 @@
 (defn write! [^SelectionKey channel-key]
   (let [{:keys [^ByteBuffer out]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
-    (when out
+    (when out #_(and out (.isValid channel-key) (.isOpen channel))
       (try
         (let [n (write-channel channel out)
               r (.remaining out)]
@@ -145,21 +148,25 @@
               (.interestOps channel-key SelectionKey/OP_WRITE)
               (-> channel-key (.selector) (.wakeup)))))
         (catch IOException e
-          (prn ::client ::socket ::io e))
+          (.cancel channel-key)
+          #_(prn ::client ::socket ::io e))
         (catch IllegalStateException e
           (prn ::client ::socket ::wrong ::state e))))))
 
-(defn accept! [ssc client-selector]
+(defn accept! [ssc ^Selector client-selector]
   (some->> ssc
            (client-channel)
            (readable client-selector)
-           #_(exchange)))
+           #_(connectable client-selector)
+           #_(exchange))
+  (.wakeup client-selector))
 
 (defn reader-task [^SelectionKey channel-key]
   (->
    (fn []
      (let [{:keys [^ByteBuffer in xf]
             :or {xf (*app-xrf* (rf/result-fn))}} (.attachment channel-key)]
+       ;; TODO: split into sub-tasks based input buf
        (run! (fn [x] (xf nil x)) in)
        (if-let [buf (some-> (xf))]
          (do ;; enough input to produce a response
@@ -180,6 +187,7 @@
       (condp = state
         :process
         (do
+          ;; TODO: split into sub-tasks based input buf
           (run! (fn [x] (xf nil x)) in)
           (if-let [buf (some-> (xf))]
             (do ;; enough input to produce a response
@@ -194,7 +202,8 @@
         :noop))))
 
 (defn process-reads [channel-keys]
-  (if (> (count channel-keys) 15)
+  ;; TODO: Dynamically determine batch size
+  (if (> (count channel-keys) 10)
     ;; fork
     (->> channel-keys
          (partition 20)
@@ -208,7 +217,10 @@
     (process channel-keys)))
 
 ;; TODO: fork multiple selectors
-(defn reactor-loop [^ServerSocketChannel ssc ^Selector main-selector]
+(defn reactor-main [^ServerSocketChannel ssc
+                    ^ByteBuffer read-buffer
+                    ^Selector main-selector
+                    all-selectors]
   (tufte/p
    ::selector
    (let [ready (select main-selector)]
@@ -221,13 +233,51 @@
                             (.cancel channel-key)
 
                             (.isAcceptable channel-key)
-                            (accept! ssc main-selector)
+                            ;; randomly assign a selector
+                            (do
+                              (accept! ssc (rand-nth all-selectors))
+                              nil)
+
+                            (.isConnectable channel-key)
+                            (.interestOps channel-key SelectionKey/OP_READ)
 
                             (.isReadable channel-key)
-                            (read! channel-key)
+                            (read! read-buffer channel-key)
 
                             (.isWritable channel-key)
                             channel-key)
+                 channel-keys (if read-key
+                                (conj channel-keys read-key)
+                                channel-keys)]
+             (.remove it)
+             (if-not (.hasNext it)
+               channel-keys
+               (recur channel-keys)))))))))
+
+(defn reactor-clients [^ByteBuffer read-buffer ^Selector client-selector]
+  (tufte/p
+   ::clients
+   (let [ready (select client-selector)]
+     (when (> ready 0)
+       (let [it (-> client-selector (.selectedKeys) (.iterator))]
+         (loop [channel-keys []]
+           (let [^SelectionKey channel-key (.next it)
+                 read-key (try
+                            (cond
+                              (not (.isValid channel-key))
+                              (.cancel channel-key)
+
+                              ;; doesn't seem to add anything
+                              (.isConnectable channel-key)
+                              (.interestOps channel-key SelectionKey/OP_READ)
+
+                              (.isReadable channel-key)
+                              (read! read-buffer channel-key)
+
+                              (.isWritable channel-key)
+                              channel-key)
+                            (catch CancelledKeyException _
+                              nil))
                  channel-keys (if read-key
                                 (conj channel-keys read-key)
                                 channel-keys)]
@@ -257,6 +307,9 @@
   (let [ssc (server-channel)
         socket (socket ssc)
         main-selector (selector)
+        ;; TODO: dynamically add and remove additional selectors
+        client-selectors (->> (range 3) (map (fn [_] (selector))) (doall))
+        all-selectors (conj client-selectors main-selector)
         listener-keys (listener ssc main-selector)
         shutdown (volatile! false)]
     ;; app
@@ -273,39 +326,57 @@
        :ssc ssc
        :socket socket
        :main-selector main-selector
-       :shutdown-fn (fn [] (vreset! shutdown true) (.wakeup main-selector))
-       :future (future
-                 (do
-                   (try
-                     (do
-                       (prn ::server ::listening port)
-                       (loop []
-                         (when-not @shutdown
-                           (-> (reactor-loop ssc main-selector)
-                               (process-reads))
-                           (recur)))
-                       (try
-                         ;; TODO: doesn't free the port?
-                         (prn ::accept ::shutdown)
-                         (.close main-selector)
-                         (.close ssc)
-                         (.close socket)
-                         (catch IOException e
-                           (prn ::shutdown e))))
-                     (catch Exception e
-                       (prn ::event ::loop e)))
-                   (prn ::done)))}))))
+       :shutdown-fn (fn []
+                      (vreset! shutdown true)
+                      (->> all-selectors
+                           (map (fn [^Selector e] (.wakeup e)))
+                           (dorun)))
+       :main (fj/thread
+               (let [read-buffer (ByteBuffer/allocateDirect buffer-size)]
+                 (prn ::server ::listening port)
+                 (loop []
+                   (when-not @shutdown
+                     (-> (reactor-main ssc read-buffer main-selector all-selectors)
+                         (process-reads))
+                     (->> client-selectors
+                          (map (fn [^Selector e] (.wakeup e)))
+                          (dorun))
+                     (recur)))
+                 (try
+                   ;; TODO: doesn't free the port?
+                   (prn ::accept ::shutdown)
+                   (.close main-selector)
+                   (.close ssc)
+                   (.close socket)
+                   (catch IOException e
+                     (prn ::shutdown e)))))
+       :threads (->> client-selectors
+                     (map (fn [^Selector client-selector]
+                            (fj/thread
+                              (let [read-buffer (ByteBuffer/allocateDirect buffer-size)]
+                                (prn ::client ::selector)
+                                (loop []
+                                  (when-not @shutdown
+                                    (-> (reactor-clients read-buffer client-selector)
+                                        (process-reads))
+                                    (recur)))
+                                (try
+                                  ;; TODO: doesn't free the port?
+                                  (prn ::accept ::shutdown)
+                                  (.close client-selector)
+                                  (catch IOException e
+                                    (prn ::shutdown e)))))))
+                     (doall))}))))
 
 #_(
    *ns*
+   *e
    (require 'jaq.http.server.nio :reload)
    (in-ns 'jaq.http.server.nio)
    *http-server*
    *e
 
-   (def http-server
-     (serve 10010))
-   (.close (::ssc http-server))
+   (-> *http-server* :shutdown-fn (apply []))
 
    (slurp "http://localhost:10010/")
 

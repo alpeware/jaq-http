@@ -22,9 +22,24 @@
 
 (defn join [task] (.join ^ForkJoinTask task))
 
+;;; threads
+(defn thread-call [^Runnable f]
+  (doto (Thread. f)
+      (.start)))
+
+;;; adapted from clojure.core.async
+(defmacro thread [& body]
+  `(thread-call (^:once fn* [] ~@body)))
+
+#_(
+   (thread (prn :foo))
+   )
+
+
 #_(
    *ns*
    (in-ns 'jaq.async.fj)
    processors
    @pool
+   (invoke (fn [] :foo))
    )
