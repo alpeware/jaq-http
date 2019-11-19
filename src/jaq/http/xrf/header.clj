@@ -3,12 +3,13 @@
    [clojure.string :as string]
    [jaq.http.xrf.rf :as rf]
    [jaq.http.xrf.params :as params]
-   [taoensso.tufte :as tufte])
+   [taoensso.tufte :as tufte :refer [defnp fnp]])
   (:import
    [java.util Locale]))
 
 #_(
    (in-ns 'jaq.http.xrf.header)
+   (fnp foo [])
    )
 
 (defn split [k pred f]
@@ -20,7 +21,7 @@
                                 @val
                                 (assoc x k)
                                 (rf acc)))]
-      (fn
+      (fnp split
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:keys [index char] :as x}]
@@ -51,7 +52,7 @@
           decode (volatile! false)
           length (volatile! 0)
           done (volatile! true)]
-      (fn
+      (fnp query
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:keys [index char] :as x}]
@@ -167,7 +168,7 @@
                                  @headers-map
                                  (assoc x k)
                                  (rf acc)))]
-       (fn
+       (fnp header
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char finalized] :as x}]

@@ -1,7 +1,8 @@
 (ns jaq.http.xrf.params
   "Transducers to handle URL encoded data."
   (:require
-   [clojure.string :as string])
+   [clojure.string :as string]
+   [taoensso.tufte :as tufte :refer [defnp fnp p]])
   (:import
    [java.nio.charset Charset]
    [java.nio ByteBuffer]))
@@ -10,7 +11,7 @@
   "Default Charset for decoding."
   (Charset/forName "UTF-8"))
 
-(defn ^String mapper
+(defnp ^String mapper
   "Maps a vec of hex ints to a string using the specified encoding."
   [v ^Charset charset]
   (->> v
@@ -22,7 +23,7 @@
        (.toString)))
 
 ;; TODO: adapt to work w/ URL query
-(defn decoder
+(defnp decoder
   "Transducer to perform URL decoding using the optional charset
   or defaulting to UTF-8."
   [& [^Charset charset]]
@@ -136,7 +137,7 @@
                                  @params-map
                                  (assoc x k)
                                  (rf acc)))]
-       (fn
+       (fnp
          ([] (rf))
          ([acc] (rf acc))
          ([acc {:keys [index char eob]
