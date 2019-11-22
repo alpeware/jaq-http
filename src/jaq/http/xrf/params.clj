@@ -22,7 +22,6 @@
        (.decode charset)
        (.toString)))
 
-;; TODO: adapt to work w/ URL query
 (defnp decoder
   "Transducer to perform URL decoding using the optional charset
   or defaulting to UTF-8."

@@ -140,7 +140,7 @@
             (let [xf (or xf (*app-xrf* (rf/result-fn)))]
               ;; TODO: split into sub-tasks based on size of input buf
               (tufte/p ::xf
-               (run! (fn [x] (xf nil x)) in))
+                       (run! (fn [x] (xf nil x)) in))
               (if-let [buf (some-> (xf))]
                 (do ;; enough input to produce a response
                   (.attach sk {:state :processed :out buf})
@@ -178,10 +178,10 @@
    )
 
 (defnp keys! [^ServerSocketChannel ssc
-             all-selectors
-             ^ByteBuffer read-buffer
-             selected-keys
-             ^SelectionKey sk]
+              all-selectors
+              ^ByteBuffer read-buffer
+              selected-keys
+              ^SelectionKey sk]
   (or
    (some->>
     ;; TODO: use ready set directly
@@ -206,9 +206,9 @@
 ;; TODO: fork multiple selectors
 ;; TODO: extract reducing fn
 (defnp reactor-main [^ServerSocketChannel ssc
-                    ^ByteBuffer read-buffer
-                    ^Selector selector
-                    all-selectors]
+                     ^ByteBuffer read-buffer
+                     ^Selector selector
+                     all-selectors]
   (when (> (select! selector) 0)
     (let [^Set keys-set (.selectedKeys selector)
           ready-set (into #{} keys-set)
@@ -222,6 +222,7 @@
           _ (.clear keys-set)]
       (->> ready-set
            (reduce (partial keys! _ _ read-buffer) [])))))
+
 
 #_(
    *ns*
@@ -240,8 +241,15 @@
         (tufte/format-grouped-pstats))
    )
 
+(defnp wakeup! [selection-keys]
+  (->> selection-keys
+       (map (fn [^SelectionKey sk]
+              (.selector sk)))
+       (set)
+       (map (fnp [^Selector e] (.wakeup e)))))
+
 (defn serve [xrf port]
-  (let [selectors 8
+  (let [selectors 0
         ssc (server-channel)
         socket (socket ssc)
         main-selector (selector!)
@@ -270,20 +278,25 @@
                            (map (fn [^Selector e] (.wakeup e)))
                            (dorun)))
        :main (fj/thread
-               (let [read-buffer (ByteBuffer/allocateDirect buffer-size)]
+               (let [read-buffer (ByteBuffer/allocateDirect buffer-size)
+                     client-selectors (if (seq client-selectors)
+                                        client-selectors
+                                        [main-selector])
+                     event-fn (if (> selectors 0)
+                                (comp
+                                 identity)
+                                (comp
+                                 process-keys!))]
                  (prn ::server ::listening port)
                  (loop []
                    (when-not @shutdown
                      (tufte/profile
                       {:id :main}
-                      (some->> (reactor-main ssc read-buffer main-selector client-selectors)
-                               #_(process-keys!)
-                               (map (fn [^SelectionKey sk]
-                                      (.selector sk)))
-                               (set)
-                               (map (fnp [^Selector e]
-                                      (.wakeup e)))
-                               (dorun)))
+                      (some->>
+                       (reactor-main ssc read-buffer main-selector client-selectors)
+                       (event-fn)
+                       (wakeup!)
+                       (dorun)))
                      (recur)))
                  (try
                    (prn ::accept ::shutdown)
@@ -305,10 +318,7 @@
                                              {:id (keyword "client" (str i))}
                                              (some->> (reactor-clients read-buffer selector)
                                                       (process-keys!)
-                                                      (map (fn [^SelectionKey sk]
-                                                             (.selector sk)))
-                                                      (set)
-                                                      (map (fnp [^Selector e] (.wakeup e)))
+                                                      (wakeup!)
                                                       (dorun)))
                                             (recur)))
                                         (try
