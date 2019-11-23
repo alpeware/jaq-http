@@ -133,17 +133,24 @@
             val (volatile! nil)
             null (volatile! false)
             map-name (volatile! [])
-            map-object (volatile! {})
             fraction (volatile! false)
             k :json
             assoc-fn (fn [acc x] (->>
                                   @json
                                   (assoc x k)
-                                  (rf acc)))]
+                                  (rf acc)))
+            done-fn (fn [acc x]
+                      (if (empty? @open)
+                        (do
+                          (vreset! json @val)
+                          (vreset! done true)
+                          (assoc-fn acc x))
+                        acc))]
         (fnp process
              ([] (rf))
              ([acc] (rf acc))
              ([acc {:keys [char] :as x}]
+              #_(prn ::open @open ::pending @pending ::map-name @map-name ::x x)
               (cond
                 @done
                 (assoc-fn acc x)
@@ -172,12 +179,7 @@
                   (vswap! open pop)
                   (vswap! pending pop)
                   (vreset! val arr)
-                  (if (empty? @open)
-                    (do
-                      (vreset! json @val)
-                      (vreset! done true)
-                      (assoc-fn acc x))
-                    acc))
+                  (done-fn acc x))
 
                 (and (or (= char \]) (= char \}))
                      (= (peek @open) :number))
@@ -189,6 +191,7 @@
                           (Long/valueOf s)
                           :else
                           (bigint s))]
+                  (vreset! fraction false)
                   (vreset! vacc [])
                   (vswap! open pop)
                   ;; TODO: DRY more
@@ -202,12 +205,7 @@
                                        (conj n)))))
                   (vswap! open pop)
                   (vswap! pending pop)
-                  (if (empty? @open)
-                    (do
-                      (vreset! json @val)
-                      (vreset! done true)
-                      (assoc-fn acc x))
-                    acc))
+                  (done-fn acc x))
 
                 ;; maps
                 (and (= char \{)
@@ -219,7 +217,7 @@
 
                 (and (= char \})
                      (= (peek @open) :map))
-                (let [m (if (and (seq @map-name) @val)
+                (let [m (if (and (seq @map-name) (not (nil? @val)))
                           (let [mn (peek @map-name)]
                             (vswap! map-name pop)
                             (-> (peek @pending)
@@ -229,12 +227,7 @@
                   (vswap! open pop)
                   (vswap! pending pop)
                   (vreset! val m)
-                  (if (empty? @open)
-                    (do
-                      (vreset! json @val)
-                      (vreset! done true)
-                      (assoc-fn acc x))
-                    acc))
+                  (done-fn acc x))
 
                 ;; string values
                 (and (= char \")
@@ -276,7 +269,7 @@
                 (and (= char \:)
                      (= (peek @open) :map))
                 (do
-                  (vswap! map-name conj @val (keyword-fn @val))
+                  (vswap! map-name conj (keyword-fn @val))
                   (vreset! val nil)
                   acc)
 
@@ -394,9 +387,9 @@
    (let [;;original ["foo" ["a" ["b" [{:bar "baz"}]]]]
          ;;original [1 2 "foo" 3 {:foo -2.2}]
          ;;original {:bar {:foo {:bar "baz"}}}
-         original {:bar {:foo [1]}}
+         ;;original {:bar {:foo [1]}}
          ;;original {:foo true :bar [true false nil]}
-         ;;original {:foo ""}
+         original {:foo.1 false}
          ;;original []
          encoded (clojure.data.json/write-str original)
          xform (comp

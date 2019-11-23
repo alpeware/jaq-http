@@ -106,7 +106,8 @@
                         (gen/one-of [(gen/vector inner-gen)
                                      (gen/map gen/keyword inner-gen)]))
                       (gen/one-of [gen/nat (gen/double* {:infinite? false :NaN? false}) gen/boolean gen/string]))]
-           (let [encoded (clj-json/write-str original)
+           (let [original (if-not (or (vector? original) (map? original)) [original] original)
+                 encoded (clj-json/write-str original)
                  xform (comp
                         rf/index
                         (json/decoder)
@@ -125,9 +126,12 @@
          original (->>
                    (gen/sample json 20)
                    (last))
+         original 0
+         original (if-not (or (vector? original) (map? original)) [original] original)
          encoded (clj-json/write-str original)
          xform (comp
                 rf/index
+                (json/decoder)
                 (json/process))
          decoded (->> (sequence xform encoded) (first) :json)]
      [original encoded decoded (= original decoded)])
