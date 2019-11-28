@@ -10,7 +10,7 @@
 (def pool
   (delay (ForkJoinPool. processors thread-factory nil true)))
 
-(defn task [^Callable f]
+(defn ^ForkJoinTask task [^Callable f]
   (ForkJoinTask/adapt f))
 
 (defn invoke [f]

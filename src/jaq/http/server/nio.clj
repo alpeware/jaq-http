@@ -239,6 +239,9 @@
    (->> @stats-acc
         :main
         (tufte/format-grouped-pstats))
+
+   (alter-var-root
+    #'*app-xrf* (constantly app/repl))
    )
 
 (defnp wakeup! [selection-keys]

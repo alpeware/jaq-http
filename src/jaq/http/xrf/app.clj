@@ -38,6 +38,8 @@
    response/plain))
 
 #_(
+   *ns*
+   (require 'jaq.http.xrf.app :reload)
    (in-ns 'jaq.http.xrf.app)
    (tufte/profile
     {}

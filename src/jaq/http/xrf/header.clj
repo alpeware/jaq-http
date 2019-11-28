@@ -1,6 +1,7 @@
 (ns jaq.http.xrf.header
   (:require
    [clojure.string :as string]
+   [clojure.set :as set]
    [jaq.http.xrf.rf :as rf]
    [jaq.http.xrf.params :as params]
    [taoensso.tufte :as tufte :refer [defnp fnp]])
@@ -8,6 +9,8 @@
    [java.util Locale]))
 
 #_(
+   *ns*
+   (require 'jaq.http.xrf.header :reload)
    (in-ns 'jaq.http.xrf.header)
    (fnp foo [])
    )
@@ -22,27 +25,27 @@
                                 (assoc x k)
                                 (rf acc)))]
       (fnp split
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:keys [index char] :as x}]
-         (cond
-           @done
-           (assoc-fn acc x)
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:keys [index char] :as x}]
+            (cond
+              @done
+              (assoc-fn acc x)
 
-           (pred char)
-           (tufte/p
-            k
-            (do
-              (->> @vacc (apply str) f (vreset! val))
-              (vreset! done true)
-              (assoc-fn acc x)))
+              (pred char)
+              (tufte/p
+               k
+               (do
+                 (->> @vacc (apply str) f (vreset! val))
+                 (vreset! done true)
+                 (assoc-fn acc x)))
 
-           :else
-           (tufte/p
-            k
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))))
+              :else
+              (tufte/p
+               k
+               (do
+                 (vswap! vacc conj char)
+                 (rf acc)))))))))
 
 (def query
   (fn [rf]
@@ -53,38 +56,58 @@
           length (volatile! 0)
           done (volatile! true)]
       (fnp query
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:keys [index char] :as x}]
-         (vswap! length inc)
-         (cond
-           (and (= @length 1)
-                (= char \?))
-           (do
-             (vreset! decode true)
-             (vreset! done false)
-             acc)
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:keys [index char] :as x}]
+            (vswap! length inc)
+            (cond
+              (and (= @length 1)
+                   (= char \?))
+              (do
+                (vreset! decode true)
+                (vreset! done false)
+                acc)
 
-           (and @done (not @decode))
-           (rf acc x)
+              (and @done (not @decode))
+              (rf acc x)
 
-           #_(and @decode (= char \space))
-           #_(->> (assoc x :eob true)
-                (parser-rf acc))
+              #_(and @decode (= char \space))
+              #_(->> (assoc x :eob true)
+                     (parser-rf acc))
 
-           @decode
-           (do
-             (tufte/p
-              :query
-              (parser-rf acc x)))))))))
+              @decode
+              (do
+                (tufte/p
+                 :query
+                 (parser-rf acc x)))))))))
 
 #_(
+   *ns*
    (in-ns 'jaq.http.xrf.header)
    (let [buf "?foo=bar+baz "
          xform (comp
                 rf/index
                 query)]
      (->> (sequence xform buf) (first) :params))
+
+   (let [buf jaq.http.client.nio/b
+         xform (comp
+                rf/index
+                scheme
+                (drop 1)
+                minor
+                (drop 1)
+                major
+                (drop 1)
+                (split :status
+                       (comp not (partial contains? numbers))
+                       (fn [s] (Integer/parseInt s)))
+                (drop 1)
+                (split :reason (comp not (partial contains? alphanumeric))
+                       identity)
+                (drop 2)
+                headers)]
+     (->> (sequence xform buf) (first) :reason))
    )
 
 (def method
@@ -99,7 +122,15 @@
 (def numbers
   (->> (range 10)
        (map (fn [i]
-              (-> \0 (char) (int) (+ i) (char))))
+              (-> \0 (int) (+ i) (char))))
+       (set)))
+
+(def alphanumeric
+  (->> (range 26)
+       (map (fn [i]
+              [(-> \A (int) (+ i) (char))
+               (-> \a (int) (+ i) (char))]))
+       (mapcat identity)
        (set)))
 
 (def minor
@@ -116,6 +147,73 @@
   (split :fragment
          (partial contains? #{\space})
          (fn [s] (if (string/blank? s) nil s))))
+
+(def status
+  (split :status
+         (comp not (partial contains? numbers))
+         (fn [s] (Integer/parseInt s))))
+
+(def reason
+  (split :reason
+         (comp not (partial contains? (set/union #{\space} alphanumeric)))
+         identity))
+
+#_(
+   *e
+   )
+
+(def whitespace #{\space \tab})
+
+(defn ignore [s]
+  (comp
+   (drop-while (fn [{:keys [char]}]
+                 (contains? s char)))))
+
+(def ignore-whitespace
+  (comp
+   (ignore whitespace)))
+
+(def response-line
+  (comp
+   scheme
+   (ignore #{\/})
+   minor
+   (ignore #{\.})
+   major
+   ignore-whitespace
+   status
+   ignore-whitespace
+   reason
+   (ignore #{\r \n})))
+
+#_(
+   (in-ns 'jaq.http.xrf.header)
+   (let [buf jaq.http.client.nio/b
+         xform (comp
+                rf/index
+                response-line
+                headers)]
+     (->> (sequence xform buf) (first)))
+
+   (let [buf jaq.http.client.nio/b
+         xform (comp
+                rf/index
+                scheme
+                (ignore #{\/})
+                minor
+                (ignore #{\.})
+                major
+                ignore-whitespace
+                status
+                ignore-whitespace
+                reason
+                (ignore #{\r \n})
+                headers)]
+     (->> (sequence xform buf) (first)))
+
+
+
+   )
 
 (def request-line
   (comp
@@ -169,57 +267,58 @@
                                  (assoc x k)
                                  (rf acc)))]
        (fnp header
-         ([] (rf))
-         ([acc] (rf acc))
-         ([acc {:keys [index char finalized] :as x}]
-          (cond
-            finalized
-            (assoc-fn acc x)
+            ([] (rf))
+            ([acc] (rf acc))
+            ([acc {:keys [index char finalized] :as x}]
+             (cond
+               finalized
+               (assoc-fn acc x)
 
-            @done
-            (do
-              (vswap! headers-map conj @val)
-              (vreset! done false)
-              (vreset! vacc [])
-              (vreset! val nil)
-              (vreset! header-name false)
-              (rf acc))
+               @done
+               (do
+                 (vswap! headers-map conj @val)
+                 (vreset! done false)
+                 (vreset! vacc [])
+                 (vreset! val nil)
+                 (vreset! header-name false)
+                 (rf acc))
 
-            (and (= char \:)
-                 (not @header-name ))
-            (do
-              (->> @vacc
-                   (map (fn [^Character e] (Character/toLowerCase e)))
-                   (apply str)
-                   #_((fn [e] (.toLowerCase e Locale/ENGLISH)))
-                   (keyword)
-                   (vreset! val))
-              (vreset! header-name true)
-              (vreset! vacc [])
-              (rf acc))
+               (and (= char \:)
+                    (not @header-name ))
+               (do
+                 (->> @vacc
+                      (map (fn [^Character e] (Character/toLowerCase e)))
+                      (apply str)
+                      #_((fn [e] (.toLowerCase e Locale/ENGLISH)))
+                      (keyword)
+                      (vreset! val))
+                 (vreset! header-name true)
+                 (vreset! vacc [])
+                 (rf acc))
 
-            (and (= char \space)
-                 (empty? @vacc))
-            (do
-              (rf acc))
+               (and (= char \space)
+                    (empty? @vacc))
+               (do
+                 (rf acc))
 
-            (and (= char \return)
-                 @val)
-            (let [hk @val
-                  hv (if (= hk :content-length)
-                       (->> @vacc (apply str) (Integer/parseInt))
-                       (->> @vacc (apply str)))]
-              (vreset! val {hk hv})
-              (vreset! done true)
-              (rf acc))
+               (and (= char \return)
+                    @val)
+               (let [hk @val
+                     hv (if (= hk :content-length)
+                          (->> @vacc (apply str) (Integer/parseInt))
+                          (->> @vacc (apply str)))]
+                 (vreset! val {hk hv})
+                 (vreset! done true)
+                 (rf acc))
 
-            (and (not= char \return)
-                 (not= char \newline))
-            (do
-              (vswap! vacc conj char)
-              (rf acc)))))))))
+               (and (not= char \return)
+                    (not= char \newline))
+               (do
+                 (vswap! vacc conj char)
+                 (rf acc)))))))))
 
 #_(
+   (require 'jaq.http.xrf.header)
    (in-ns 'jaq.http.xrf.header)
    *e
 

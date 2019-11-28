@@ -5,11 +5,10 @@
 
 (defnp mapper
   "Maps a vec of chars in hex ints to a character."
-  [v]
-  (->> v
-       (apply str)
-       ((fn [e] (Integer/parseInt e 16)))
-       (char)))
+  [[a b c d]]
+  (-> (str (char a) (char b) (char c) (char d))
+      (Integer/parseInt 16)
+      (char)))
 
 #_(
    (mapper  (->> "0092" (map char)))
@@ -25,7 +24,7 @@
    )
 
 
-(defnp decoder
+(defn decoder
   "Transducer to perform JSON decoding."
   []
   (fn [rf]
@@ -39,66 +38,66 @@
                      (vreset! decode false)
                      (->> (assoc x :char c)
                           (rf acc)))]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:keys [index char]
-               {:keys [content-length]} :headers
-               :as x}]
-         (vswap! length inc)
-         (cond
-           @done
-           (rf acc x)
+      (fnp decode-rf
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:keys [index char]
+                  {:keys [content-length]} :headers
+                  :as x}]
+            (vswap! length inc)
+            (cond
+              @done
+              (rf acc x)
 
-           (and (= char \") @decode)
-           #_(assoc-fn acc x \")
-           (assoc-fn acc x :quotes)
+              (and (= char \") @decode)
+              #_(assoc-fn acc x \")
+              (assoc-fn acc x :quotes)
 
-           (and (= char \/) @decode)
-           (assoc-fn acc x \/)
+              (and (= char \/) @decode)
+              (assoc-fn acc x \/)
 
-           ;; NOTE: using \ seems to confuse smartparens
-           (and (= (int char) 92) @decode) ;; \
-           (assoc-fn acc x (clojure.core/char 92))
+              ;; NOTE: using \ seems to confuse smartparens
+              (and (= (int char) 92) @decode) ;; \
+              (assoc-fn acc x (clojure.core/char 92))
 
-           (and (= char \b) @decode (not @hex))
-           (assoc-fn acc x \backspace)
+              (and (= char \b) @decode (not @hex))
+              (assoc-fn acc x \backspace)
 
-           (and (= char \f) @decode (not @hex))
-           (assoc-fn acc x \formfeed)
+              (and (= char \f) @decode (not @hex))
+              (assoc-fn acc x \formfeed)
 
-           (and (= char \n) @decode (not @hex))
-           (assoc-fn acc x \newline)
+              (and (= char \n) @decode (not @hex))
+              (assoc-fn acc x \newline)
 
-           (and (= char \r) @decode (not @hex))
-           (assoc-fn acc x \return)
+              (and (= char \r) @decode (not @hex))
+              (assoc-fn acc x \return)
 
-           (and (= char \t) @decode (not @hex))
-           (assoc-fn acc x \tab)
+              (and (= char \t) @decode (not @hex))
+              (assoc-fn acc x \tab)
 
-           (and (= char \u) @decode (not @hex))
-           (do
-             (vreset! hex true)
-             acc)
+              (and (= char \u) @decode (not @hex))
+              (do
+                (vreset! hex true)
+                acc)
 
-           (and (= (int char) 92) (not @decode)) ;; \
-           (do
-             (vreset! decode true)
-             acc)
+              (and (= (int char) 92) (not @decode)) ;; \
+              (do
+                (vreset! decode true)
+                acc)
 
-           @decode
-           (do
-             (vswap! vacc conj char)
-             (when (-> @vacc (count) (= 4))
-               (let [c (->> @vacc (mapper))
-                     c (if (= c \") :quotes c)]
-                 (vreset! decode false)
-                 (vreset! hex false)
-                 (vreset! vacc [])
-                 (assoc-fn acc x c))))
+              @decode
+              (do
+                (vswap! vacc conj char)
+                (when (-> @vacc (count) (= 4))
+                  (let [c (->> @vacc (mapper))
+                        c (if (= c \") :quotes c)]
+                    (vreset! decode false)
+                    (vreset! hex false)
+                    (vreset! vacc [])
+                    (assoc-fn acc x c))))
 
-           :else
-           (assoc-fn acc x char)))))))
+              :else
+              (assoc-fn acc x char)))))))
 
 #_(
    *e
@@ -146,7 +145,7 @@
                           (vreset! done true)
                           (assoc-fn acc x))
                         acc))]
-        (fnp process
+        (fnp process-rf
              ([] (rf))
              ([acc] (rf acc))
              ([acc {:keys [char] :as x}]

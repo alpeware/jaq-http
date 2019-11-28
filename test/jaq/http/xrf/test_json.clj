@@ -116,7 +116,6 @@
              (is (= original decoded)))))
 
 #_(
-   *e
 
    (let [json (gen/recursive-gen
                (fn [inner-gen]
@@ -126,7 +125,6 @@
          original (->>
                    (gen/sample json 20)
                    (last))
-         original 0
          original (if-not (or (vector? original) (map? original)) [original] original)
          encoded (clj-json/write-str original)
          xform (comp
@@ -136,16 +134,24 @@
          decoded (->> (sequence xform encoded) (first) :json)]
      [original encoded decoded (= original decoded)])
 
-   (gen/sample (gen/vector (gen/one-of [gen/nat gen/boolean])))
-   *e
-   (let [;;original ["foo" {"bar" "baz"}]
-         original {:bar ""}
-         encoded (clj-json/write-str original)
-         xform (comp
-                rf/index
-                json/process)
-         decoded (->> (sequence xform encoded) (first) :json)]
-     [original encoded decoded (= original decoded)])
+   (tufte/add-basic-println-handler! {})
+   (tufte/profile
+    {:id :json}
+    (let [json (gen/recursive-gen
+                (fn [inner-gen]
+                  (gen/one-of [(gen/vector inner-gen)
+                               (gen/map gen/keyword inner-gen)]))
+                (gen/one-of [gen/nat (gen/double* {:infinite? false :NaN? false}) gen/boolean gen/string]))
+          xform (comp
+                 rf/index
+                 (json/decoder)
+                 (json/process))]
+      (doseq [original (gen/sample json 400)]
+        (let [original (if-not (or (vector? original) (map? original)) [original] original)
+              encoded (clj-json/write-str original)]
+          (tufte/p ::jaq (->> (sequence xform encoded) (first) :json))
+          (tufte/p ::data (clj-json/read-str encoded))))))
+
 
    *e
    *ns*
