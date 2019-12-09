@@ -1,40 +1,45 @@
-{:paths ["src" "classes"]
- :mvn/local-repo "./.m2"
- :deps {org.clojure/clojure {:mvn/version "1.10.1"}
-        com.taoensso/tufte {:mvn/version "2.1.0"}
-        com.alpeware/jaq-repl {:git/url "https://github.com/alpeware/jaq-repl"
-                               :sha "a01f8db75944d8066865f482b2b1383090ed78e7"}
-        net.cgrand/xforms {:mvn/version "0.19.2" :exclusions [org.clojure/clojurescript org.clojure/clojure]}}
- :aliases {:b
-           {:extra-paths ["scripts"]
-            :main-opts ["-m" "build"]}
-           :m
-           {:main-opts ["-m" "jaq.http.server"]}
-           :p
-           {:extra-paths ["profiles"]
-            :main-opts ["-m" "jaq.http.server"]
-            ;; profiling setup https://github.com/google/pprof/issues/346#issuecomment-378119331
-            :jvm-opts ["-agentpath:./profiler_java_agent.so=-logtostderr,-cprof_profile_filename=./profiles/profile_,-cprof_enable_heap_sampling,-cprof_interval_sec=5,-cprof_duration_sec=10"]}
-           :t
-           {:extra-deps {org.clojure/test.check {:mvn/version "0.10.0"}
-                         com.gfredericks/test.chuck {:mvn/version "0.2.10"}}
-            :extra-paths ["test"]
-            :main-opts ["-m" "jaq.http.server"]}
-           ;; for benchmarking
-           :aleph
-           {:extra-paths ["scripts"]
-            :extra-deps {aleph {:mvn/version "0.4.6"}}
-            :main-opts ["-m" "aleph"]}
-           :http-kit
-           {:extra-paths ["scripts"]
-            :extra-deps {http-kit {:mvn/version "2.3.0"}}
-            :main-opts ["-m" "http-kit"]}
-           :metosin
-           {:extra-paths ["scripts"]
-            :extra-deps {metosin/pohjavirta {:mvn/version "0.0.1-alpha5"}}
-            :main-opts ["-m" "metosin"]}
-           :jetty
-           {:extra-paths ["scripts"]
-            :extra-deps {ring/ring-core {:mvn/version "1.8.0"}
-                         ring/ring-jetty-adapter {:mvn/version "1.8.0"}}
-            :main-opts ["-m" "jetty"]}}}
+{:paths ["src" "classes"],
+ :mvn/local-repo "./.m2",
+ :deps
+ {org.clojure/clojure {:mvn/version "1.10.1"},
+  com.taoensso/tufte {:mvn/version "2.1.0"},
+  com.alpeware/jaq-repl
+  {:git/url "https://github.com/alpeware/jaq-repl",
+   :tag "HEAD",
+   :sha "a01f8db75944d8066865f482b2b1383090ed78e7"},
+  net.cgrand/xforms
+  {:mvn/version "0.19.2", :exclusions [org.clojure/clojurescript org.clojure/clojure]}},
+ :aliases
+ {:b {:extra-paths ["scripts"], :main-opts ["-m" "build"]},
+  :m {:main-opts ["-m" "jaq.http.server"]},
+  :p
+  {:extra-paths ["profiles"],
+   :main-opts ["-m" "jaq.http.server"],
+   :jvm-opts
+   ;; profiling setup https://github.com/google/pprof/issues/346#issuecomment-378119331
+   ["-agentpath:./profiler_java_agent.so=-logtostderr,-cprof_profile_filename=./profiles/profile_,-cprof_enable_heap_sampling,-cprof_interval_sec=5,-cprof_duration_sec=10"]},
+  :t
+  {:extra-deps
+   {org.clojure/test.check {:mvn/version "0.10.0"},
+    org.clojure/data.json {:mvn/version "0.2.7"}
+    com.gfredericks/test.chuck {:mvn/version "0.2.10"}},
+   :extra-paths ["test"],
+   :main-opts ["-m" "jaq.http.server"]
+   :jvm-opts ["-Djavax.net.debug=all"]},
+  :aleph
+  {:extra-paths ["scripts"],
+   :extra-deps {aleph/aleph {:mvn/version "0.4.6"}},
+   :main-opts ["-m" "aleph"]},
+  :http-kit
+  {:extra-paths ["scripts"],
+   :extra-deps {http-kit/http-kit {:mvn/version "2.3.0"}},
+   :main-opts ["-m" "http-kit"]},
+  :metosin
+  {:extra-paths ["scripts"],
+   :extra-deps {metosin/pohjavirta {:mvn/version "0.0.1-alpha5"}},
+   :main-opts ["-m" "metosin"]},
+  :jetty
+  {:extra-paths ["scripts"],
+   :extra-deps
+   {ring/ring-core {:mvn/version "1.8.0"}, ring/ring-jetty-adapter {:mvn/version "1.8.0"}},
+   :main-opts ["-m" "jetty"]}}}
