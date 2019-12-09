@@ -54,6 +54,31 @@
                       decoded (->> (sequence xform encoded) (first) :params)]
                   (is (= original decoded)))))
 
+(defspec check-encode 100
+  (for-all [s gen/string]
+           (let [original (URLEncoder/encode s (.name params/default-charset))
+                 xform (comp
+                        rf/index
+                        (params/encoder))
+                 encoded (->> (sequence xform s)
+                              (map :char)
+                              (apply str))]
+             (is (= original encoded)))))
+
+#_(
+
+   (let [original (-> (gen/sample gen/string) (last))
+         encoded (URLEncoder/encode original (.name params/default-charset))
+         xform (comp
+                rf/index
+                (params/encoder))
+         encoded-rf (->> (sequence xform original)
+                      (map :char)
+                      (apply str))]
+     [original encoded-rf encoded (= encoded-rf encoded)])
+   )
+
+
 #_(
    *e
    *ns*

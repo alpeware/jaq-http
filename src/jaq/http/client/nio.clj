@@ -1,9 +1,12 @@
 (ns jaq.http.client.nio
   (:require
+   [clojure.string :as string]
    [taoensso.tufte :as tufte :refer [defnp fnp]]
    [jaq.async.fj :as fj]
    [jaq.http.xrf.app :as app]
+   [jaq.http.xrf.params :as params]
    [jaq.http.xrf.header :as header]
+   [jaq.http.xrf.json :as json]
    [jaq.http.xrf.rf :as rf])
   (:import
    [java.io IOException]
@@ -15,6 +18,7 @@
    [java.nio.channels.spi AbstractSelectableChannel]
    [java.nio ByteBuffer CharBuffer]
    [java.util Set]
+   [java.util.concurrent ConcurrentLinkedDeque]
    [javax.net.ssl
     SNIHostName SNIServerName
     SSLEngine SSLEngineResult SSLEngineResult$HandshakeStatus SSLEngineResult$Status
@@ -72,7 +76,7 @@
 (defnp register! [^Selector selector attachment ^SocketChannel channel]
   (.register channel
              selector
-             (bit-or SelectionKey/OP_CONNECT SelectionKey/OP_WRITE)
+             (bit-or SelectionKey/OP_CONNECT SelectionKey/OP_WRITE SelectionKey/OP_READ)
              attachment))
 
 (defnp wakeup! [selection-keys]
@@ -83,7 +87,7 @@
        (map (fnp [^Selector e] (.wakeup e)))))
 
 (defnp read! [^ByteBuffer read-buffer ^SelectionKey sk]
-  (let [{:keys [state engine in] :as attachment} (.attachment sk)
+  (let [{:keys [state engine ^ConcurrentLinkedDeque in] :as attachment} (.attachment sk)
         ^SocketChannel channel (.channel sk)]
     (let [n (->> read-buffer
                  (.clear)
@@ -103,31 +107,32 @@
           (prn ::read-buffer read-buffer n)
           (.put bb read-buffer)
           (.flip bb)
-          (->> (assoc attachment
-                      :in bb
-                      :state :decode)
-               (.attach sk))
+          (.addLast in bb)
+          #_(->> (assoc attachment
+                        :in bb
+                        :state :decode)
+                 (.attach sk))
           sk)))))
 
 (defnp write! [^SelectionKey sk]
-  (let [{:keys [^ByteBuffer out state] :as attachment} (.attachment sk)
+  (let [{:keys [^ConcurrentLinkedDeque out state] :as attachment} (.attachment sk)
         ^SocketChannel channel (.channel sk)]
-    (prn ::write out)
-    (when out #_(and out (.isValid channel-key) (.isOpen channel))
-          (let [n (write-channel channel out)
-                r (.remaining out)]
-            (prn ::wrote n)
-            (if (= r 0) ;; end of buf
-              (do
-                (.clear out)
-                (.interestOps sk SelectionKey/OP_READ)
-                #_(-> sk (.selector) (.wakeup))
-                sk)
+    (when-not (.isEmpty out) #_(and out (.isValid channel-key) (.isOpen channel))
+              (let [buf (.peekFirst out)
+                    n (write-channel channel buf)
+                    r (.remaining buf)]
+                (prn ::wrote n)
+                (if (= r 0) ;; end of buf
+                  (do
+                    (.removeFirst out)
+                    #_(.interestOps sk SelectionKey/OP_READ)
+                    #_(-> sk (.selector) (.wakeup))
+                    sk)
 
-              (do
-                (.interestOps sk SelectionKey/OP_WRITE)
-                #_(-> sk (.selector) (.wakeup))
-                sk))))))
+                  (do
+                    #_(.interestOps sk SelectionKey/OP_WRITE)
+                    #_(-> sk (.selector) (.wakeup))
+                    sk))))))
 
 (defnp connect! [^SelectionKey sk]
   ;; TODO: handle exceptions?
@@ -168,22 +173,26 @@
 
    )
 
+(def empty-buffer (ByteBuffer/allocate 0))
+
 (defnp handshake!
   ([^SSLEngine engine ^SelectionKey sk]
    (handshake! engine sk (.getHandshakeStatus engine)))
   ([^SSLEngine engine ^SelectionKey sk
     ^SSLEngineResult$HandshakeStatus handshake-status]
-   (let [{:keys [^ByteBuffer in ^ByteBuffer encoded
-                 ^ByteBuffer out ^ByteBuffer decoded]
+   (let [{:keys [^ConcurrentLinkedDeque in ^ByteBuffer encoded
+                 ^ConcurrentLinkedDeque out ^ByteBuffer decoded
+                 ^ByteBuffer scratch
+                 ^ByteBuffer request]
           :as attachment} (.attachment sk)
          hs (handshake? engine)
          _ (prn ::hs hs)
          step (condp = hs
                 :finished
                 (do
-                  (->> (assoc attachment
-                              :status :connected)
-                       (.attach sk))
+                  #_(->> (assoc attachment
+                                :status :connected)
+                         (.attach sk))
                   :finished)
 
                 :need-task
@@ -195,9 +204,9 @@
 
                 ;; write data to network
                 :need-wrap
-                (let [_ (.clear out)
+                (let [_ (.clear scratch)
                       result (-> engine
-                                 (.wrap encoded out)
+                                 (.wrap empty-buffer scratch)
                                  (result?))]
                   (condp = result
                     :buffer-overflow
@@ -208,15 +217,47 @@
                     :tbd
                     :ok
                     (do
-                      (.flip out)
-                      (prn ::out out)
-                      (.interestOps sk SelectionKey/OP_WRITE)
+                      (.flip scratch)
+                      (.addLast out
+                                (-> (.limit scratch)
+                                    (ByteBuffer/allocate)
+                                    (.put scratch)
+                                    (.flip)))
+                      (prn ::scratch scratch)
+                      #_(.interestOps sk SelectionKey/OP_WRITE)
                       (handshake? engine))))
 
                 ;; read data from network
                 :need-unwrap
-                (if (and in (< (.position in) (.limit in)))
-                  (let [result (-> engine
+                (let [^ByteBuffer buf (.peekFirst in)]
+                  (if #_(and in (< (.position in) (.limit in)))
+                      (and buf (< (.position buf) (.limit buf)))
+                      (let [result (-> engine
+                                       (.unwrap buf empty-buffer)
+                                       (result?))]
+                        (condp = result
+                          :buffer-overflow
+                          :tbd
+                          :buffer-underflow
+                          :tbd
+                          :closed
+                          :tbd
+                          :ok
+                          (do
+                            (when-not (.hasRemaining buf)
+                              (.removeFirst in))
+                            (prn ::in buf)
+                            #_(.interestOps sk SelectionKey/OP_READ)
+                            (handshake? engine))))
+                      :waiting-for-input))
+
+                ;; read data to network
+                ;; TODO: can we remove this case?
+                :need-unwrap-again
+                (do
+                  (prn ::unwrap-again)
+                  :tbd)
+                #_(let [result (-> engine
                                    (.unwrap in decoded)
                                    (result?))]
                     (condp = result
@@ -228,37 +269,42 @@
                       :tbd
                       :ok
                       (do
-                        ;; TODO: clear in from attachment?
-                        (prn ::in in)
                         (.interestOps sk SelectionKey/OP_READ)
                         (handshake? engine))))
-                  :waiting-for-input)
-
-                ;; read data to network
-                :need-unwrap-again
-                (let [result (-> engine
-                                 (.unwrap in decoded)
-                                 (result?))]
-                  (condp = result
-                    :buffer-overflow
-                    :tbd
-                    :buffer-underflow
-                    :tbd
-                    :closed
-                    :tbd
-                    :ok
-                    (do
-                      (.interestOps sk SelectionKey/OP_READ)
-                      (handshake? engine))))
                 :noop)]
      (prn ::step step ::in in ::out out)
-     (if-not (or
-              (= step :need-task)
-              (and (= step :need-wrap) (= (.limit out) (.capacity out)))
-              (and (= step :need-unwrap) (< (.position in) (.limit in))))
-       step
-       ;; TODO: fork as new task?
-       (handshake! engine sk (.getHandshakeStatus engine))))))
+     ;; TODO: fix
+     #_(when (contains? #{:finished :not-handshaking} step)
+         ;; handshake is done, so queue our actual request
+         (let [_ (.clear scratch)
+               result (-> engine
+                          (.wrap request scratch)
+                          (result?))]
+           (condp = result
+             :buffer-overflow
+             :tbd
+             :buffer-underflow
+             :tbd
+             :closed
+             :tbd
+             :ok
+             (do
+               (.flip scratch)
+               (.addLast out scratch)
+               (prn ::out scratch)
+               #_(.interestOps sk SelectionKey/OP_WRITE)
+               (prn (handshake? engine))))))
+     (let [^ByteBuffer buf-in (.peekFirst in)
+           ^ByteBuffer buf-out (.peekFirst out)]
+       (if-not (or
+                (= step :need-task)
+                #_(and buf-out (= step :need-wrap) (= (.limit buf-out) (.capacity buf-out)))
+                (= step :need-wrap)
+                (= step :need-unwrap)
+                #_(and buf-in (= step :need-unwrap) (< (.position buf-in) (.limit buf-in))))
+         step
+         ;; TODO: fork as new task?
+         (handshake! engine sk (.getHandshakeStatus engine)))))))
 
 #_(
    c
@@ -277,9 +323,11 @@
 
    )
 (defnp process! [selected-keys]
+  (prn ::processing selected-keys)
   (doseq [^SelectionKey sk selected-keys]
-    (let [{:keys [^ByteBuffer in ^ByteBuffer out
+    (let [{:keys [^ConcurrentLinkedDeque in ^ConcurrentLinkedDeque out
                   ^ByteBuffer encoded ^ByteBuffer decoded
+                  ^ByteBuffer scratch ^ByteBuffer request
                   callback-fn
                   scheme
                   ^SSLEngine engine
@@ -290,12 +338,35 @@
       (try
         (if-not (contains? #{:finished :not-handshaking} hs)
           (handshake! engine sk)
-          (condp = state
-            :decode
-            (let [result (-> engine
-                             (.unwrap in decoded)
+          (cond
+
+            (.hasRemaining request)
+            (let [_ (.clear scratch)
+                  result (-> engine
+                             (.wrap request scratch)
                              (result?))]
-              (prn ::decoded decoded)
+              (condp = result
+                :buffer-overflow
+                :tbd
+                :buffer-underflow
+                :tbd
+                :closed
+                :tbd
+                :ok
+                (do
+                  (.flip scratch)
+                  (.addLast out scratch)
+                  (prn ::out scratch)
+                  #_(.interestOps sk SelectionKey/OP_WRITE)
+                  (prn (handshake? engine)))))
+
+            (not (.isEmpty in))
+            (let [_ (.clear scratch)
+                  buf (.peekFirst in)
+                  result (-> engine
+                             (.unwrap buf scratch)
+                             (result?))]
+              (prn ::decoded scratch)
               sk)
 
             :process
@@ -319,8 +390,7 @@
                     (->> {:state :reading}
                          (conj attachment)
                          (.attach sk))
-                    (.interestOps sk SelectionKey/OP_READ)))))
-            :noop))
+                    (.interestOps sk SelectionKey/OP_READ)))))))
         (catch ClosedChannelException _
           #_(prn ::closed e sk))
         (catch CancelledKeyException _
@@ -353,16 +423,26 @@
    (some->>
     ;; TODO: use ready set directly
     (try
-      (cond
-        (.isConnectable sk)
-        ;;TODO: connect
-        (connect! sk)
+      #_(cond
+          (.isConnectable sk)
+          (connect! sk)
 
-        (.isReadable sk)
-        (read! read-buffer sk)
+          (.isReadable sk)
+          (read! read-buffer sk)
 
-        (.isWritable sk)
+          (.isWritable sk)
+          (write! sk))
+
+      (when (.isConnectable sk)
+        (connect! sk))
+
+      (when (.isReadable sk)
+        (read! read-buffer sk))
+
+      (when (.isWritable sk)
         (write! sk))
+
+      sk
       (catch CancelledKeyException _
         nil))
     (conj selected-keys))
@@ -431,7 +511,7 @@
 (defn ^SSLContext context []
   (SSLContext/getDefault)
   #_(doto (SSLContext/getInstance "TLSv1.2")
-    (.init nil nil nil)))
+      (.init nil nil nil)))
 
 (defn ^SSLEngine engine [^SSLContext context] (.createSSLEngine context))
 
@@ -458,25 +538,28 @@
    SSLEngineResult$HandshakeStatus/FINISHED
    )
 
-(defn configure [^SSLEngine engine host]
+(defn configure [^SSLEngine engine ^String host]
   (let [params (.getSSLParameters engine)
         ^SNIServerName server-name (SNIHostName. host)]
     (.setServerNames params [server-name])
     (.setSSLParameters engine params)
     engine))
 
-(defn request [selector {:keys [scheme host port path]
+(defn request [selector {:keys [scheme host port path req]
                          :or {scheme :http path "/"}}]
   (let [m {:http 80 :https 443}
         port (or port (get m scheme))
-        engine (when (= scheme :https)
-                 (-> (context) (engine) (client-mode) (configure host)))
+        ^SSLEngine engine (when (= scheme :https)
+                            (-> (context) (engine) (client-mode) (configure host)))
         packet-buffer-size (-> engine (.getSession) (.getPacketBufferSize))
         encoded (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
         decoded (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
+        scratch (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
         in (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
         out (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
-        request (ByteBuffer/wrap (.getBytes (str "GET " path " HTTP/1.1\r\nHost: " host "\r\n\r\n")))]
+        ;;request (ByteBuffer/wrap (.getBytes (str "GET " path " HTTP/1.1\r\nHost: " host "\r\n\r\n")))
+        request (->> req (clojure.string/join) (.getBytes) (ByteBuffer/wrap))
+        ]
     ;; write out handshake
     (.beginHandshake engine)
     (.wrap engine encoded out)
@@ -486,8 +569,9 @@
               {:request request
                :encoded encoded
                :decoded decoded
-               :in nil
-               :out out
+               :scratch scratch
+               :in (ConcurrentLinkedDeque.)
+               :out (ConcurrentLinkedDeque. [out])
                :engine engine
                :scheme scheme
                :callback-fn (fn [b] (prn ::b b))
@@ -504,10 +588,13 @@
    (require 'jaq.http.client.nio :reload)
    (in-ns 'jaq.http.client.nio)
 
+   (->> (ConcurrentLinkedDeque. [:foo :bar]) (.isEmpty))
+
    (-> *http-client* :shutdown-fn (apply []))
    (.close s)
    (-> c (.channel) (.close))
    (-> c (.channel))
+   (-> c (.cancel))
 
    (def s (selector!))
    (event-loop s)
@@ -515,16 +602,172 @@
                                        :xf ((map (fn [x] x)) (rf/result-fn))
                                        :callback-fn (fn [b] (prn ::b b))}))
 
+   (.wakeup s)
    (def host "www.googleapis.com")
    (def path "/storage/v1/b?project=alpeare-jaq-runtime")
 
+   ;; google oauth2
+   (def google-client-id "32555940559.apps.googleusercontent.com")
+   (def google-client-secret "ZmssLNjJy2998hD4CTg2ejr2")
+   (def auth-uri "https://accounts.google.com/o/oauth2/auth")
+   (def token-uri "https://accounts.google.com/o/oauth2/token")
+   (def revoke-uri "https://accounts.google.com/o/oauth2/revoke")
+   (def local-redirect-uri "urn:ietf:wg:oauth:2.0:oob")
+   (def cloud-scopes ["https://www.googleapis.com/auth/appengine.admin" "https://www.googleapis.com/auth/cloud-platform"])
+   {:access-type "offline"
+    :prompt "consent"
+    :include-granted-scopes "true"
+    :response-type "code"
+    :scope (clojure.string/join " " cloud-scopes)}
+
+   ;; accounts.google.com/o/oauth2/auth?client_id=32555940559.apps.googleusercontent.com&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob&access_type=offline&prompt=consent&include_granted_scopes=true&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fappengine.admin+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform
+
+   ;; request api
+   (def c
+     (->> {:host "accounts.google.com" :path "/o/oauth2/token"
+           ;;:host "jaq.alpeware.com" :path "/"
+           :method :POST :scheme :https :port 443
+           :minor 1 :major 1
+           :headers {:content-type "application/x-www-form-urlencoded"}
+           :params {:client-id google-client-id
+                    :client-secret google-client-secret
+                    :redirect-uri local-redirect-uri
+                    :code "4/twGly8_B-5JFAzujY8m2mxeU9PoWB7QxjqI62WeivHihbvEjBrs5Bjk"
+                    :grant-type "authorization_code"
+                    ;;:access-type "offline"
+                    ;;:prompt "consent"
+                    ;;:include-granted-scopes "true"
+                    ;;:response-type "code"
+                    ;;:scope (clojure.string/join " " cloud-scopes)
+                    }}
+          (conj [])
+          (sequence
+           (comp
+            (map (fn [x] (assoc x :req [])))
+            (map (fn [{:keys [req headers host] :as x}]
+                   (assoc x :headers (conj {:Host host} headers))))
+            (map (fn [{:keys [req method] :as x}]
+                   (update x :req conj (-> method (name) (str)))))
+            (map (fn [{:keys [req] :as x}]
+                   (update x :req conj " ")))
+            (map (fn [{:keys [req path] :as x}]
+                   (update x :req conj path)))
+            (fn [rf]
+              (let [normalize (fn [s] (clojure.string/replace s #"-" "_"))]
+                (fn params
+                  ([] (rf))
+                  ([acc] (rf acc))
+                  ([acc {:keys [req method params] :as x}]
+                   (if (and (= :GET method) params)
+                     (->> params
+                          (reduce
+                           (fn [reqs [k v]]
+                             (conj reqs
+                                   (->> k (name) (str) (normalize) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
+                                   "="
+                                   (->> v (str) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
+                                   "&"))
+                           ["?"])
+                          (butlast)
+                          (update x :req into)
+                          (rf acc))
+                     (rf acc x))))))
+            (map (fn [{:keys [req] :as x}]
+                   (update x :req conj " ")))
+            (map (fn [{:keys [req] :as x}]
+                   (update x :req conj "HTTP")))
+            (map (fn [{:keys [req] :as x}]
+                   (update x :req conj "/")))
+            (map (fn [{:keys [req major minor] :as x}]
+                   (update x :req conj (str major "." minor))))
+            (map (fn [{:keys [req] :as x}]
+                   (update x :req conj "\r\n")))
+            (fn [rf]
+              (let [normalize (fn [s] (clojure.string/replace s #"-" "_"))]
+                (fn params
+                  ([] (rf))
+                  ([acc] (rf acc))
+                  ([acc {:keys [method params body]
+                         :as x}]
+                   (if (and (= :POST method) params)
+                     (->> params
+                          (reduce
+                           (fn [bodies [k v]]
+                             (conj bodies
+                                   (->> k (name) (str) (normalize) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
+                                   "="
+                                   (->> v (str) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
+                                   "&"))
+                           [])
+                          (butlast)
+                          (clojure.string/join)
+                          (assoc x :body)
+                          (rf acc))
+                     (rf acc x))))))
+            (map (fn [{:keys [headers body] :as x}]
+                   (update x :headers conj {:content-length (count body)})))
+            (fn [rf]
+              (fn headers
+                ([] (rf))
+                ([acc] (rf acc))
+                ([acc {:keys [req headers] :as x}]
+                 (if headers
+                   (->> headers
+                        (reduce
+                         (fn [reqs [k v]]
+                           (conj reqs
+                                 (->> k (name) (str) (string/capitalize))
+                                 ": "
+                                 (->>
+                                  (cond
+                                    (instance? clojure.lang.Keyword v)
+                                    (name v)
+                                    :else
+                                    v)
+                                  (str))
+                                 "\r\n"))
+                         [])
+                        (update x :req into)
+                        (rf acc))
+                   (rf acc x)))))
+            (map (fn [{:keys [req] :as x}]
+                   (update x :req conj "\r\n")))
+            (map (fn [{:keys [req body] :as x}]
+                   (update x :req conj body)))
+            #_(map :req)
+            #_(fn [rf]
+                (fn method
+                  ([] (rf))
+                  ([acc] (rf acc))
+                  ([acc {:keys [method req] :as x}]
+                   (rf acc (assoc x :req (-> method (name) (str " ")))))))))
+          (first)
+          #_:body
+          #_:req
+          (request s)
+          #_(clojure.string/join))
+     )
+
+   *e
+   (reduce
+    (fn [reqs [k v]]
+      (conj reqs (-> k name str) (str v)))
+    []
+    {:foo :bar :baz :barrz})
+
+   (def c (request s {:host "accounts.google.com" :path "/o/oauth2/auth" :scheme :https :port 443}))
+
+   (def c (request s {:host "jaq.alpeware.com" :path "/" :scheme :https :port 443}))
+
    (def c (request s {:host host :path path :scheme :https :port 443}))
+   (-> c (.channel) (.close))
+   (.cancel c)
    (def e (-> c .attachment :engine))
 
    (write-channel (-> c .channel) (-> c .attachment :request))
    (.interestOps c SelectionKey/OP_WRITE)
    (.wakeup s)
-   (-> e (handshake?) (clarify))
+   (-> e (handshake?) #_(clarify))
    (-> e (.getSSLParameters) (.getServerNames))
 
    (-> e (.getHandshakeSession))
@@ -534,30 +777,113 @@
    (->> e (.getEnabledProtocols) (map str))
 
    (-> c .attachment :decoded)
+   (-> c .attachment :decoded (.rewind))
+   (-> c .attachment :decoded (.flip))
+   (->> c .attachment :decoded (.decode params/default-charset) (.toString))
+   (def r *1)
 
-   (-> c .attachment :out (.clear))
+   (sequence
+    (comp
+     rf/index
+     header/response-line
+     header/headers
+     (take 1)
+     )
+    r)
+
+   ;; json
+   (->>
+    (sequence
+     (comp
+      rf/index
+      header/response-line
+      header/headers
+      (drop 1)
+      (fn [rf]
+        (let [vacc (volatile! [])
+              done (volatile! false)
+              val (volatile! nil)
+              k :content-length
+              assoc-fn (fn [acc x]
+                         (->> @val
+                              (update x :headers conj)
+                              (rf acc)))]
+          (fn chunk
+            ([] (rf))
+            ([acc] (rf acc))
+            ([acc {:keys [char]
+                   {:keys [transfer-encoding]} :headers
+                   :as x}]
+             (if (= "chunked" transfer-encoding)
+               (cond
+                 @done
+                 (assoc-fn acc x)
+
+                 (and
+                  (nil? @val)
+                  (contains? #{\return \newline} char))
+                 (do
+                   (prn @vacc)
+                   (vreset! val
+                            {k
+                             (-> (apply str @vacc)
+                                 (Integer/parseInt 16))})
+                   (vreset! vacc nil)
+                   (vreset! done true)
+                   (rf acc))
+
+                 :else
+                 (do
+                   (vswap! vacc conj char)
+                   (rf acc)))
+               (rf acc x))))))
+      (drop 1)
+      (json/decoder)
+      (json/process)
+      (take 1))
+     r)
+    (first)
+    :json)
+
+   *e
+
+
+
+   params/default-charset
+   (-> c .attachment :scratch (.clear))
+   (.wrap e
+          empty-buffer
+          (-> c .attachment :scratch))
+
    (.wrap e
           (-> c .attachment :request)
-          (-> c .attachment :out))
+          (-> c .attachment :scratch))
 
-   (.clear (-> c .attachment :out))
+   (.clear (-> c .attachment :scratch))
 
-   (.flip (-> c .attachment :out))
+   (.flip (-> c .attachment :scratch))
 
-   (write-channel (-> c .channel) (-> c .attachment :out))
+   (write-channel (-> c .channel) (-> c .attachment :scratch))
    (read-channel (-> c .channel) (-> c .attachment :out))
 
    *e
 
 
+   (->> c .attachment :scratch (.flip))
+   (->> c .attachment :scratch (. charset decode) (.toString))
+   (def r *1)
+
    (.unwrap e
-            (-> c .attachment :in)
-            (-> c .attachment :decoded))
+            empty-buffer
+            (-> c .attachment :scratch))
+
+   (-> c .attachment :decoded (.rewind))
+   (->> c .attachment :decoded (. charset decode))
 
    (-> (.getDelegatedTask e) (.run))
    (-> e (handshake?) (clarify))
 
-   (-> c .attachment :out)
+   (->> c .attachment :request (.rewind) (. charset decode))
    (-> c .attachment :engine (.getHandshakeStatus))
    (-> c .attachment keys)
    (->> c .attachment :in (. charset decode))
@@ -567,11 +893,6 @@
    (def bb (ByteBuffer/allocate 20000))
    (-> c .attachment :engine (.wrap (ByteBuffer/wrap (.getBytes "")) b))
    (-> c .attachment :engine (.unwrap b bb))
-
-   c
-
-   b
-
 
    *e
 
@@ -584,5 +905,4 @@
    (wakeup! [c])
    c
    (.selectNow s)
-   *e
-   )
+   *e)

@@ -1,6 +1,7 @@
 (ns jaq.http.xrf.params
   "Transducers to handle URL encoded data."
   (:require
+   [clojure.set :as set]
    [clojure.string :as string]
    [taoensso.tufte :as tufte :refer [defnp fnp p]])
   (:import
@@ -49,8 +50,8 @@
             assoc-fn (fn [acc x content-length c]
                        (let [[acc' x'] (purge-fn acc x)]
                          (if
-                           (and content-length
-                                (= @length content-length))
+                             (and content-length
+                                  (= @length content-length))
                            (->> (conj x' {:char c :eob true})
                                 (rf acc'))
                            (do
@@ -102,6 +103,8 @@
              :else
              (assoc-fn acc x content-length char))))))))
 
+
+
 #_(
    *e
    *ns*
@@ -137,68 +140,68 @@
                                  (assoc x k)
                                  (rf acc)))]
        (fnp
-         ([] (rf))
-         ([acc] (rf acc))
-         ([acc {:keys [index char eob]
-                :as x}]
-          (cond
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:keys [index char eob]
+               :as x}]
+         (cond
 
-            ;; only key but no value
-            (and (= char :assign) eob)
-            (let [pk (->> @vacc
-                          (apply str)
-                          (keyword)
-                          (vreset! val))
-                  pv nil]
-              (vswap! params-map conj {pk pv})
-              (vreset! done false)
-              (vreset! param-name false)
-              (vreset! vacc [])
-              (vreset! val nil)
-              (assoc-fn acc x))
+           ;; only key but no value
+           (and (= char :assign) eob)
+           (let [pk (->> @vacc
+                         (apply str)
+                         (keyword)
+                         (vreset! val))
+                 pv nil]
+             (vswap! params-map conj {pk pv})
+             (vreset! done false)
+             (vreset! param-name false)
+             (vreset! vacc [])
+             (vreset! val nil)
+             (assoc-fn acc x))
 
-            (= char :assign)
-            (do
-              (->> @vacc
-                   (apply str)
-                   (keyword)
-                   (vreset! val))
-              (vreset! vacc [])
-              (vreset! param-name true)
-              acc)
+           (= char :assign)
+           (do
+             (->> @vacc
+                  (apply str)
+                  (keyword)
+                  (vreset! val))
+             (vreset! vacc [])
+             (vreset! param-name true)
+             acc)
 
-            (and (= char :sep) @val)
-            (let [pk @val
-                  pv (if (seq @vacc)
-                       (->> @vacc (apply str))
-                       nil)]
-              (vswap! params-map conj {pk pv})
-              (vreset! done false)
-              (vreset! param-name false)
-              (vreset! vacc [])
-              (vreset! val nil)
-              acc)
+           (and (= char :sep) @val)
+           (let [pk @val
+                 pv (if (seq @vacc)
+                      (->> @vacc (apply str))
+                      nil)]
+             (vswap! params-map conj {pk pv})
+             (vreset! done false)
+             (vreset! param-name false)
+             (vreset! vacc [])
+             (vreset! val nil)
+             acc)
 
-            (and eob @val)
-            (let [pk @val
-                  pv (->> (if (= char \space)
-                            @vacc
-                            (conj @vacc char))
-                          (apply str)
-                          ((fn [s] (if (string/blank? s)
-                                     nil
-                                     s))))]
-              (vswap! params-map conj {pk pv})
-              (vreset! done false)
-              (vreset! param-name false)
-              (vreset! vacc [])
-              (vreset! val nil)
-              (assoc-fn acc x))
+           (and eob @val)
+           (let [pk @val
+                 pv (->> (if (= char \space)
+                           @vacc
+                           (conj @vacc char))
+                         (apply str)
+                         ((fn [s] (if (string/blank? s)
+                                    nil
+                                    s))))]
+             (vswap! params-map conj {pk pv})
+             (vreset! done false)
+             (vreset! param-name false)
+             (vreset! vacc [])
+             (vreset! val nil)
+             (assoc-fn acc x))
 
-            :else
-            (do
-              (vswap! vacc conj char)
-              acc))))))))
+           :else
+           (do
+             (vswap! vacc conj char)
+             acc))))))))
 
 #_(
    *e
@@ -227,6 +230,158 @@
                 :params)]
      [original encoded m (= original m)])
 
+   )
+
+;; TODO: DRY
+(def numbers
+  (->> (range 10)
+       (map (fn [i]
+              (-> \0 (int) (+ i) (char))))
+       (set)))
+
+(def alpha
+  (->> (range 26)
+       (map (fn [i]
+              [(-> \A (int) (+ i) (char))
+               (-> \a (int) (+ i) (char))]))
+       (mapcat identity)
+       (set)))
+
+(def alphanumeric (set/union alpha numbers))
+;;
+
+;; https://tools.ietf.org/html/rfc2396:
+;; 2.2. Reserved Characters
+(def reserved #{\; \/ \? \: \@ \& \= \+ \$ \,})
+
+;; 2.3. Unreserved Characters
+;; seems common to exclude \'  \(  \) \!  \~
+(def unreserved #{\-  \_  \.  \*})
+
+(def allowed? (set/union alphanumeric unreserved))
+
+(defnp escape [charset c]
+  (let [bb (->> (str c)
+                (.encode charset))]
+    (->> bb
+         (.limit)
+         (range)
+         (map (fn [_]
+                (let [ch (.get bb)
+                      i (-> ch
+                            (bit-and 0x0F))
+                      j (-> (bit-shift-right ch 4)
+                            (bit-and 0x0F))]
+                  ["%"
+                   (-> (- 9 j)
+                       (bit-shift-right 31)
+                       (bit-and 7)
+                       (+ j 48)
+                       char)
+                   (-> (- 9 i)
+                       (bit-shift-right 31)
+                       (bit-and 7)
+                       (+ i 48)
+                       char)])))
+         (mapcat identity)
+         (apply str))))
+
+#_(
+   (Integer/toHexString (int \u03A9))
+   (Integer/toHexString (int \space))
+
+   (let [c \u03A9
+         ;;c \u0001
+         charset default-charset
+         bb (->> c
+                 (str)
+                 (.encode charset))
+         ]
+     (->> bb
+          (.limit)
+          (range)
+          (map (fn [_]
+                 (let [c (.get bb)
+                       i (-> c
+                             (bit-and 0x0F))
+                       j (-> (bit-shift-right c 4)
+                             (bit-and 0x0F))]
+                   ["%"
+                    (-> (- 9 j)
+                        (bit-shift-right 31)
+                        (bit-and 7)
+                        (+ j 48)
+                        char)
+                    (-> (- 9 i)
+                        (bit-shift-right 31)
+                        (bit-and 7)
+                        (+ i 48)
+                        char)])))
+          (mapcat identity)
+          (apply str))
+     )
+
+   *e
+   ;; (48 + i + (39 & ((9 - i) >> 31)))
+   ;; (48 + i + (7 & ((9 - i) >> 31)))
+   mod
+   )
+
+(defnp encoder
+  "Transducer to perform URL encoding using the optional charset
+  or defaulting to UTF-8."
+  [& [^Charset charset]]
+  (let [charset (or charset default-charset)]
+    (fn [rf]
+      (let [purge-fn (fn [acc x vs]
+                       (let [acc' (loop [s vs
+                                         acc' acc]
+                                    (if (empty? s)
+                                      acc'
+                                      (recur (rest s)
+                                             (->> (first s)
+                                                  (assoc x :char)
+                                                  (rf acc')))))]
+                         [acc' x]))
+            assoc-fn (fn [acc x c]
+                       (->> (assoc x :char c)
+                            (rf acc)))]
+        (fn
+          ([] (rf))
+          ([acc] (rf acc))
+          ([acc {:keys [index char]
+                 :as x}]
+           (cond
+             ;; special case space
+             (= char \space)
+             (assoc-fn acc x \+)
+
+             ;; no need to escape
+             (contains? allowed? char)
+             (assoc-fn acc x char)
+
+             ;; escape everything else
+             :else
+             (->> char (escape charset) (purge-fn acc x)))))))))
+
+#_(
+
+   (let [original "a$ \u03A9 d & !@#$"
+         encoded (java.net.URLEncoder/encode original "UTF-8")
+         xform (comp
+                jaq.http.xrf.rf/index
+                (encoder))
+         encoded-rf (->> (sequence xform original)
+                         (map :char)
+                         (apply str))]
+     [original encoded encoded-rf (= encoded encoded-rf)])
+
+   (char 122)
+   (Character/isHighSurrogate \space)
+   (Character/isHighSurrogate \u03A9)
+   (Integer/toHexString (int \u03A9))
+   (Integer/toHexString (int \space))
+   *e
    )
 
 (def body
