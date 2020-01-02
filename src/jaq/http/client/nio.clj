@@ -118,7 +118,7 @@
   (let [{:keys [^ConcurrentLinkedDeque out state] :as attachment} (.attachment sk)
         ^SocketChannel channel (.channel sk)]
     (when-not (.isEmpty out) #_(and out (.isValid channel-key) (.isOpen channel))
-              (let [buf (.peekFirst out)
+              (let [^ByteBuffer buf (.peekFirst out)
                     n (write-channel channel buf)
                     r (.remaining buf)]
                 (prn ::wrote n)
@@ -173,7 +173,7 @@
 
    )
 
-(def empty-buffer (ByteBuffer/allocate 0))
+(def ^ByteBuffer empty-buffer (ByteBuffer/allocate 0))
 
 (defnp handshake!
   ([^SSLEngine engine ^SelectionKey sk]
@@ -362,7 +362,7 @@
 
             (not (.isEmpty in))
             (let [_ (.clear scratch)
-                  buf (.peekFirst in)
+                  ^ByteBuffer buf (.peekFirst in)
                   result (-> engine
                              (.unwrap buf scratch)
                              (result?))]
