@@ -7,6 +7,7 @@
    [jaq.http.xrf.params :as params]
    [jaq.http.xrf.header :as header]
    [jaq.http.xrf.json :as json]
+   [jaq.http.xrf.ssl :as ssl]
    [jaq.http.xrf.rf :as rf])
   (:import
    [java.io IOException]
@@ -166,12 +167,6 @@
 (defnp result? [^SSLEngineResult result]
   (->> ^SSLEngineResult$Status (.getStatus result)
        (get engine-status)))
-
-#_(
-
-   (-> c .attachment :engine handshake? clarify)
-
-   )
 
 (def ^ByteBuffer empty-buffer (ByteBuffer/allocate 0))
 
@@ -557,9 +552,7 @@
         scratch (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
         in (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
         out (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
-        ;;request (ByteBuffer/wrap (.getBytes (str "GET " path " HTTP/1.1\r\nHost: " host "\r\n\r\n")))
-        request (->> req (clojure.string/join) (.getBytes) (ByteBuffer/wrap))
-        ]
+        request (->> req (clojure.string/join) (.getBytes) (ByteBuffer/wrap))]
     ;; write out handshake
     (.beginHandshake engine)
     (.wrap engine encoded out)
@@ -598,6 +591,7 @@
 
    (def s (selector!))
    (event-loop s)
+
    (def c (channel! s "google.com" 80 {:out (ByteBuffer/wrap (.getBytes "GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\n"))
                                        :xf ((map (fn [x] x)) (rf/result-fn))
                                        :callback-fn (fn [b] (prn ::b b))}))
@@ -622,6 +616,18 @@
 
    ;; accounts.google.com/o/oauth2/auth?client_id=32555940559.apps.googleusercontent.com&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob&access_type=offline&prompt=consent&include_granted_scopes=true&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fappengine.admin+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform
 
+   ;; refresh token
+   (def c
+     (->> (select-keys
+           (merge
+            jaq.http.gcp.auth/google-oauth2 jaq.http.gcp.auth/c
+            {:grant-type "refresh_token"})
+           [:grant-type :client-id :client-secret :refresh-token])
+          (jaq.http.gcp.auth/refresh-token)
+          (request s)
+          )
+     )
+
    ;; request api
    (def c
      (->> {:host "accounts.google.com" :path "/o/oauth2/token"
@@ -632,7 +638,7 @@
            :params {:client-id google-client-id
                     :client-secret google-client-secret
                     :redirect-uri local-redirect-uri
-                    :code "4/twGly8_B-5JFAzujY8m2mxeU9PoWB7QxjqI62WeivHihbvEjBrs5Bjk"
+                    :code "4/vAGh7aiBuf4rNaRFQfnRbxoJv5CA35eaEt-faVsnMZKTTHK4WxQPd_M"
                     :grant-type "authorization_code"
                     ;;:access-type "offline"
                     ;;:prompt "consent"
@@ -845,9 +851,9 @@
     (first)
     :json)
 
+   (def credentials *1)
+
    *e
-
-
 
    params/default-charset
    (-> c .attachment :scratch (.clear))
@@ -872,6 +878,27 @@
    (->> c .attachment :scratch (.flip))
    (->> c .attachment :scratch (. charset decode) (.toString))
    (def r *1)
+   (->>
+    (sequence jaq.http.gcp.auth/credentials-rf r)
+    (first)
+    :json)
+
+   (sequence
+    (comp rf/index
+          header/response-line
+          header/headers
+          (map :char)
+          (take 4))
+    r)
+
+   (sequence
+    (comp rf/index
+          header/response-line
+          header/headers
+          (header/ignore #{\newline \return})
+          (map :char)
+          (take 4))
+    r)
 
    (.unwrap e
             empty-buffer

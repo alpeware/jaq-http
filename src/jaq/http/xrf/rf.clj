@@ -36,6 +36,14 @@
            (true-rf result input)
            (false-rf result input)))))))
 
+(def identity-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc x]
+       (rf acc x)))))
+
 ;; TODO: choose
 
 
@@ -61,17 +69,17 @@
 ;; example to enqueue another value
 (def loop-rf
   (fn [rf]
-    (let [loop-fn (fn [acc x])]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:keys [i] :as x}]
-         (rf acc (assoc x :loop-rf rf)))))))
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:keys [] :as x}]
+       (->> (assoc x :context/loop-rf rf)
+            (rf acc))))))
 
 
 #_(
 
-   (sequence (comp
+   (into [] (comp
               loop-rf
               (fn sum [rf]
                 (let [s (volatile! 0)]
