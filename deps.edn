@@ -2,7 +2,7 @@
  :mvn/local-repo "./.m2",
  :deps
  {org.clojure/clojure {:mvn/version "1.10.1"},
-  com.taoensso/tufte {:mvn/version "2.1.0"},
+  org.clojure/data.json {:mvn/version "0.2.7"}
   com.alpeware/jaq-repl
   {:git/url "https://github.com/alpeware/jaq-repl",
    :tag "HEAD",
@@ -11,6 +11,7 @@
   {:mvn/version "0.19.2", :exclusions [org.clojure/clojurescript org.clojure/clojure]}},
  :aliases
  {:b {:extra-paths ["scripts"], :main-opts ["-m" "build"]},
+  :u {:extra-paths ["scripts"], :main-opts ["-m" "upload"]},
   :m {:main-opts ["-m" "jaq.http.server"]},
   :p
   {:extra-paths ["profiles"],
@@ -21,11 +22,12 @@
   :t
   {:extra-deps
    {org.clojure/test.check {:mvn/version "0.10.0"},
-    org.clojure/data.json {:mvn/version "0.2.7"}
-    com.gfredericks/test.chuck {:mvn/version "0.2.10"}},
+    com.gfredericks/test.chuck {:mvn/version "0.2.10"},
+    com.taoensso/tufte {:mvn/version "2.1.0"}},
    :extra-paths ["test"],
    :main-opts ["-m" "jaq.http.server"]
-   :jvm-opts ["-Djavax.net.debug=all"]},
+   ;;:jvm-opts ["-Djavax.net.debug=all"]
+   },
   :aleph
   {:extra-paths ["scripts"],
    :extra-deps {aleph/aleph {:mvn/version "0.4.6"}},

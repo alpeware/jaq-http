@@ -3,7 +3,7 @@
   (:require
    [clojure.set :as set]
    [clojure.string :as string]
-   [taoensso.tufte :as tufte :refer [defnp fnp p]])
+   [jaq.http.xrf.rf :as rf])
   (:import
    [java.nio.charset Charset]
    [java.nio ByteBuffer]))
@@ -12,7 +12,7 @@
   "Default Charset for decoding."
   (Charset/forName "UTF-8"))
 
-(defnp ^String mapper
+(defn ^String mapper
   "Maps a vec of hex ints to a string using the specified encoding."
   [v ^Charset charset]
   (->> v
@@ -23,7 +23,7 @@
        (.decode charset)
        (.toString)))
 
-(defnp decoder
+(defn decoder
   "Transducer to perform URL decoding using the optional charset
   or defaulting to UTF-8."
   [& [^Charset charset]]
@@ -139,7 +139,7 @@
                                  @params-map
                                  (assoc x k)
                                  (rf acc)))]
-       (fnp
+       (fn
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:keys [index char eob]
@@ -260,7 +260,7 @@
 
 (def allowed? (set/union alphanumeric unreserved))
 
-(defnp escape [charset c]
+(defn escape [charset c]
   (let [bb (->> (str c)
                 (.encode charset))]
     (->> bb
@@ -327,7 +327,7 @@
    mod
    )
 
-(defnp encoder
+(defn encoder
   "Transducer to perform URL encoding using the optional charset
   or defaulting to UTF-8."
   [& [^Charset charset]]
@@ -393,6 +393,12 @@
    (in-ns 'jaq.http.xrf.params)
 
    (def s "form=%2Ans%2A&foo=bar")
+   (def s "uploadType=resumable&name=foo%2Fdeps.edn&upload_id=AEnB2UoGkoiWdHMv-oHWkpn_XwACHL0uQaWd-oB0TdvPUdKU0gaosVXxkrF-TmeR3ALSXzn3BknQ4OX5X1zMkKeMdqADuPbhsg")
+
+   (sequence
+    (comp
+     rf/index
+     params) s)
    s
    *ns*
    *e

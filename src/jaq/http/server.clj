@@ -4,7 +4,8 @@
   (:require
    [clojure.walk :as walk]
    [jaq.http.server.nio :as nio]
-   [jaq.http.xrf.app :as app]))
+   [jaq.http.xrf.app :as app]
+   [jaq.http.xrf.nio :as n]))
 
 (def env
   (->> (System/getenv)

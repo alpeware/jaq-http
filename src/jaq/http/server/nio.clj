@@ -1,7 +1,6 @@
 (ns jaq.http.server.nio
   (:gen-class)
   (:require
-   [taoensso.tufte :as tufte :refer [defnp fnp]]
    [jaq.async.fj :as fj]
    [jaq.http.xrf.app :as app]
    [jaq.http.xrf.rf :as rf])
@@ -18,7 +17,7 @@
 
 (set! *warn-on-reflection* true)
 
-(def stats-accumulator (tufte/add-accumulating-handler! {:ns-pattern "*"}))
+#_(def stats-accumulator (tufte/add-accumulating-handler! {:ns-pattern "*"}))
 
 (def ^:dynamic *http-server* nil)
 
@@ -84,7 +83,7 @@
    *e
    )
 
-(defnp read! [^ByteBuffer read-buffer ^SelectionKey channel-key]
+(defn read! [^ByteBuffer read-buffer ^SelectionKey channel-key]
   (let [;;{:keys [state]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (let [n (->> read-buffer
@@ -104,7 +103,7 @@
           (.attach channel-key {:in bb :state :process})
           channel-key)))))
 
-(defnp write! [^SelectionKey channel-key]
+(defn write! [^SelectionKey channel-key]
   (let [{:keys [^ByteBuffer out]} (.attachment channel-key)
         ^SocketChannel channel (.channel channel-key)]
     (when out #_(and out (.isValid channel-key) (.isOpen channel))
@@ -119,12 +118,12 @@
                 (.interestOps channel-key SelectionKey/OP_WRITE)
                 (-> channel-key (.selector) (.wakeup))))))))
 
-(defnp accept! [ssc ^Selector selector]
+(defn accept! [ssc ^Selector selector]
   (some->> ssc
            (client-channel)
            (readable selector)))
 
-(defnp process! [selected-keys]
+(defn process! [selected-keys]
   (doseq [^SelectionKey sk selected-keys]
     (let [{:keys [^ByteBuffer in
                   ^ByteBuffer out
@@ -139,8 +138,7 @@
           (do
             (let [xf (or xf (*app-xrf* (rf/result-fn)))]
               ;; TODO: split into sub-tasks based on size of input buf
-              (tufte/p ::xf
-                       (run! (fn [x] (xf nil x)) in))
+              (run! (fn [x] (xf nil x)) in)
               (if-let [buf (some-> (xf))]
                 (do ;; enough input to produce a response
                   (.attach sk {:state :processed :out buf})
@@ -157,7 +155,7 @@
         (catch CancelledKeyException _
           #_(prn ::cancelled e sk))))))
 
-(defnp process-keys! [selected-keys]
+(defn process-keys! [selected-keys]
   ;; TODO: Dynamically determine batch size
   (let [batch-size 400]
     (->> selected-keys
@@ -177,7 +175,7 @@
    (in-ns 'jaq.http.server.nio)
    )
 
-(defnp keys! [^ServerSocketChannel ssc
+(defn keys! [^ServerSocketChannel ssc
               all-selectors
               ^ByteBuffer read-buffer
               selected-keys
@@ -205,7 +203,7 @@
 
 ;; TODO: fork multiple selectors
 ;; TODO: extract reducing fn
-(defnp reactor-main [^ServerSocketChannel ssc
+(defn reactor-main [^ServerSocketChannel ssc
                      ^ByteBuffer read-buffer
                      ^Selector selector
                      all-selectors]
@@ -215,7 +213,7 @@
           _ (.clear keys-set)]
       (->> ready-set (reduce (partial keys! ssc all-selectors read-buffer) [])))))
 
-(defnp reactor-clients [^ByteBuffer read-buffer ^Selector selector]
+(defn reactor-clients [^ByteBuffer read-buffer ^Selector selector]
   (when (> (select! selector) 0)
     (let [^Set keys-set (.selectedKeys selector)
           ready-set (into #{} keys-set)
@@ -244,12 +242,12 @@
     #'*app-xrf* (constantly app/repl))
    )
 
-(defnp wakeup! [selection-keys]
+(defn wakeup! [selection-keys]
   (->> selection-keys
        (map (fn [^SelectionKey sk]
               (.selector sk)))
        (set)
-       (map (fnp [^Selector e] (.wakeup e)))))
+       (map (fn [^Selector e] (.wakeup e)))))
 
 (defn serve [xrf port]
   (let [selectors 0
@@ -293,13 +291,11 @@
                  (prn ::server ::listening port)
                  (loop []
                    (when-not @shutdown
-                     (tufte/profile
-                      {:id :main}
-                      (some->>
-                       (reactor-main ssc read-buffer main-selector client-selectors)
-                       (event-fn)
-                       (wakeup!)
-                       (dorun)))
+                     (some->>
+                      (reactor-main ssc read-buffer main-selector client-selectors)
+                      (event-fn)
+                      (wakeup!)
+                      (dorun))
                      (recur)))
                  (try
                    (prn ::accept ::shutdown)
@@ -309,7 +305,7 @@
                    (catch IOException e
                      (prn ::shutdown e)))
                  (prn "---- stats ----")
-                 (println (tufte/format-grouped-pstats @stats-accumulator))))
+                 #_(println (tufte/format-grouped-pstats @stats-accumulator))))
        :threads (->> client-selectors
                      (map-indexed (fn [i ^Selector selector]
                                     (fj/thread
@@ -317,12 +313,10 @@
                                         (prn ::client ::selector)
                                         (loop []
                                           (when-not @shutdown
-                                            (tufte/profile
-                                             {:id (keyword "client" (str i))}
-                                             (some->> (reactor-clients read-buffer selector)
-                                                      (process-keys!)
-                                                      (wakeup!)
-                                                      (dorun)))
+                                            (some->> (reactor-clients read-buffer selector)
+                                                     (process-keys!)
+                                                     (wakeup!)
+                                                     (dorun))
                                             (recur)))
                                         (try
                                           (prn ::accept ::shutdown)

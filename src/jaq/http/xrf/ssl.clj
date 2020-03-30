@@ -3,8 +3,7 @@
    [clojure.string :as string]
    [clojure.set :as set]
    [jaq.http.xrf.rf :as rf]
-   [jaq.http.xrf.params :as params]
-   [taoensso.tufte :as tufte :refer [defnp fnp]])
+   [jaq.http.xrf.params :as params])
   (:import
    [java.nio.channels
     CancelledKeyException ClosedChannelException
@@ -36,17 +35,17 @@
    SSLEngineResult$Status/CLOSED :closed
    SSLEngineResult$Status/OK :ok})
 
-(defnp handshake? [^SSLEngine engine]
+(defn handshake? [^SSLEngine engine]
   (->> ^SSLEngineResult$HandshakeStatus (.getHandshakeStatus engine)
        (get handshake-status)))
 
-(defnp result? [^SSLEngineResult result]
+(defn result? [^SSLEngineResult result]
   (->> ^SSLEngineResult$Status (.getStatus result)
        (get engine-status)))
 
 (def ^ByteBuffer empty-buffer (ByteBuffer/allocateDirect (* 16 1024)))
 
-(defnp handshake!
+(defn handshake!
   ([^SSLEngine engine x]
    (handshake! engine x (.getHandshakeStatus engine)))
   ([^SSLEngine engine x ^SSLEngineResult$HandshakeStatus handshake-status]
@@ -63,7 +62,9 @@
                 :need-task
                 (do
                   (prn ::executing ::task)
-                  (try
+                  (-> (.getDelegatedTask engine)
+                      ^Runnable (.run))
+                  #_(try
                     (-> (.getDelegatedTask engine)
                         ^Runnable (.run))
                     (catch Throwable e
@@ -154,11 +155,11 @@
   (doto engine (.setUseClientMode true)))
 
 ;; aka encode: plain src -> encoded dst
-(defnp wrap! [^SSLEngine engine ^ByteBuffer src ^ByteBuffer dst]
+(defn wrap! [^SSLEngine engine ^ByteBuffer src ^ByteBuffer dst]
   (let [^SSLEngineResult result (.wrap engine src dst)]))
 
 ;; aka decode: encoded src -> plain dst
-(defnp unwrap! [^SSLEngine engine ^ByteBuffer src ^ByteBuffer dst]
+(defn unwrap! [^SSLEngine engine ^ByteBuffer src ^ByteBuffer dst]
   (let [^SSLEngineResult result (.unwrap engine src dst)]))
 
 (defn configure [^SSLEngine engine ^String host]
@@ -243,7 +244,7 @@
                #_(.interestOps selection-key SelectionKey/OP_READ)
                (rf acc x)))))))))
 
-(def request-ssl-rf
+#_(def request-ssl-rf
   (fn [rf]
     (let [once (volatile! false)
           request (volatile! nil)
@@ -278,9 +279,79 @@
            (->> (assoc x :context/clear! clear!)
                 (rf acc))))))))
 
-(def response-ssl-rf
+(def request-ssl-rf
   (fn [rf]
     (let [once (volatile! false)
+          request (volatile! nil)
+          requests (volatile! nil)
+          clear! (fn [] (vreset! requests nil))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               :ssl/keys [^SSLEngine engine]
+               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               :as x}]
+         (when-not @requests
+           (->> req
+                (map (fn [e]
+                       (cond
+                         (string? e)
+                         (-> (.getBytes e)
+                             (ByteBuffer/wrap))
+
+                         (instance? ByteBuffer e)
+                         e)))
+                (vreset! requests)))
+         (when (and @request (not (.hasRemaining @request)))
+           (vreset! request nil))
+         (when (and (seq @requests) (not @request))
+           (->> @requests
+                (first)
+                (vreset! request))
+           (vswap! requests rest))
+         (if (and @request (.hasRemaining @request))
+           (let [dst (reserve)
+                 result (-> engine
+                            (.wrap @request dst)
+                            (result?))]
+             (condp = result
+               :closed
+               (throw (IllegalStateException. "Connection closed"))
+
+               ;; wait for socket out to clear
+               :buffer-overflow
+               (do
+                 #_(prn result dst @request)
+                 (rf acc))
+
+               :ok
+               (do
+                 (.flip dst)
+                 (commit dst)
+                 (recur acc x))))
+           (->> (assoc x :context/clear! clear!)
+                (rf acc))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.ssl)
+   *e
+   (map (fn [e]
+          (cond
+            (string? e)
+            (-> (.getBytes e)
+                (ByteBuffer/wrap))
+
+            (instance? ByteBuffer e)
+            e)))
+   )
+
+
+(def response-ssl-rf
+  (fn [rf]
+    (let [done (volatile! false)
+          done! (fn []
+                  (vswap! done not))
           parsed (volatile! false)
           parsed! (fn []
                     (vswap! parsed not))
@@ -294,77 +365,82 @@
                {{{:keys [block decommit commit buf-b] :as bip-in} :context/bip} :nio/in} :nio/attachment
                {{{:keys [reserve] :as bip-out} :context/bip} :nio/out} :nio/attachment
                :as x}]
-         (let [;;_ (.interestOps selection-key SelectionKey/OP_READ)
-               ^ByteBuffer bb (block)
-               ;;_ (prn ::response bb)
-               ^ByteBuffer scratch (reserve)
-               result (if (.hasRemaining bb) #_(>= (.remaining bb) (-> engine (.getSession) (.getPacketBufferSize)))
-                          (try
-                            (-> ^SSLEngine engine
-                                (.unwrap bb scratch)
-                                (result?))
-                            (catch SSLException e
-                              (prn e)
-                              :buffer-underflow))
-                          :buffer-underflow)]
-           #_(prn ::result result bb)
-           (condp = result
-             :closed
-             (throw (IllegalStateException. "Connection closed"))
+         (if @done
+           (->> (assoc x :context/done! done!)
+                (rf acc))
+           (let [;;_ (.interestOps selection-key SelectionKey/OP_READ)
+                 ^ByteBuffer bb (block)
+                 ;;_ (prn ::response bb)
+                 ^ByteBuffer scratch (reserve)
+                 result (if (.hasRemaining bb) #_(>= (.remaining bb) (-> engine (.getSession) (.getPacketBufferSize)))
+                            (try
+                              (-> ^SSLEngine engine
+                                  (.unwrap bb scratch)
+                                  (result?))
+                              (catch SSLException e
+                                (prn e)
+                                :buffer-underflow))
+                            :buffer-underflow)]
+             #_(prn ::result result bb)
+             (condp = result
+               :closed
+               (throw (IllegalStateException. "Connection closed"))
 
-             :buffer-underflow
-             (do
-               #_(prn ::buffer-underflow ::compacting bb buf-b scratch)
-               (if-not (and (.hasRemaining bb) (> (.limit buf-b) 0))
-                 (rf acc)
-                 ;; compact & merge region a and b of bip
-                 (do
-                   (prn ::buffer-underflow ::compacting bb buf-b scratch)
-                   (.put scratch bb)
-                   (decommit bb)
-                   (let [^ByteBuffer bb2 (block)]
-                     (.put scratch bb2)
-                     (decommit bb2)
-                     (.flip scratch)
-                     (let [^ByteBuffer bb3 ((:reserve bip-in))]
-                       (.put bb3 scratch)
-                       (.flip bb3)
-                       (commit bb3))))))
+               :buffer-underflow
+               (do
+                 #_(prn ::buffer-underflow ::compacting bb buf-b scratch)
+                 (if-not (and (.hasRemaining bb) (> (.limit buf-b) 0))
+                   (rf acc)
+                   ;; compact & merge region a and b of bip
+                   (do
+                     (prn ::buffer-underflow ::compacting bb buf-b scratch)
+                     (.put scratch bb)
+                     (decommit bb)
+                     (let [^ByteBuffer bb2 (block)]
+                       (.put scratch bb2)
+                       (decommit bb2)
+                       (.flip scratch)
+                       (let [^ByteBuffer bb3 ((:reserve bip-in))]
+                         (.put bb3 scratch)
+                         (.flip bb3)
+                         (commit bb3))))))
 
-             :buffer-overflow
-             (prn ::buffer-overflow bb scratch)
-             (rf acc)
+               :buffer-overflow
+               (prn ::buffer-overflow bb scratch)
+               (rf acc)
 
-             :ok
-             (do
-               #_(.interestOps selection-key SelectionKey/OP_READ)
-               ;; TODO: looks like decommitting a partially read buffer has a bug?
-               (decommit bb)
-               (.flip scratch)
-               (when (.hasRemaining scratch)
-                 (->> scratch
-                      (.limit)
-                      (range)
-                      (map (fn [_]
-                             (let [b (-> scratch (.get))]
-                               (if @parsed
-                                 (->> (assoc x
-                                             :context/parsed! parsed!
-                                             :byte b)
-                                      (rf acc))
-                                 (->> (assoc x
-                                             :context/parsed! parsed!
-                                             :char (char b))
-                                      (rf acc)))
-                               #_(->> (assoc x :char (char b) :byte b) (rf acc))
-                               #_(->> c (assoc x :char) (rf acc)))))
-                      (doall))
-                 #_(prn ::response bb scratch (block) (.hasRemaining bb)))
-               (if-not (.hasRemaining bb)
-                 (rf acc)
-                 (do
-                   #_(prn ::recur bb)
-                   (recur acc x)))))))))))
+               :ok
+               (do
+                 #_(.interestOps selection-key SelectionKey/OP_READ)
+                 ;; TODO: looks like decommitting a partially read buffer has a bug?
+                 (decommit bb)
+                 (.flip scratch)
+                 (when (.hasRemaining scratch)
+                   (->> scratch
+                        (.limit)
+                        (range)
+                        (map (fn [_]
+                               (let [b (-> scratch (.get))]
+                                 (if @parsed
+                                   (->> (assoc x
+                                               :context/parsed! parsed!
+                                               :context/done! done!
+                                               :byte b)
+                                        (rf acc))
+                                   (->> (assoc x
+                                               :context/parsed! parsed!
+                                               :context/done! done!
+                                               :char (char b))
+                                        (rf acc)))
+                                 #_(->> (assoc x :char (char b) :byte b) (rf acc))
+                                 #_(->> c (assoc x :char) (rf acc)))))
+                        (doall))
+                   #_(prn ::response bb scratch (block) (.hasRemaining bb)))
+                 (if-not (.hasRemaining bb)
+                   (rf acc)
+                   (do
+                     #_(prn ::recur bb)
+                     (recur acc x))))))))))))
 
 #_(
    (let [[a b] [:foo :bar]]

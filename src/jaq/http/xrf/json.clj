@@ -1,9 +1,7 @@
 (ns jaq.http.xrf.json
-  "Transducers to handle JSON data."
-  (:require
-   [taoensso.tufte :as tufte :refer [defnp fnp p]]))
+  "Transducers to handle JSON data.")
 
-(defnp mapper
+(defn mapper
   "Maps a vec of chars in hex ints to a character."
   [[a b c d]]
   (-> (str (char a) (char b) (char c) (char d))
@@ -38,7 +36,7 @@
                      (vreset! decode false)
                      (->> (assoc x :char c)
                           (rf acc)))]
-      (fnp decode-rf
+      (fn decode-rf
            ([] (rf))
            ([acc] (rf acc))
            ([acc {:keys [index char]
@@ -145,7 +143,7 @@
                           (vreset! done true)
                           (assoc-fn acc x))
                         acc))]
-        (fnp process-rf
+        (fn process-rf
              ([] (rf))
              ([acc] (rf acc))
              ([acc {:keys [char] :as x}]

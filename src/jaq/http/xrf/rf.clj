@@ -1,6 +1,6 @@
 (ns jaq.http.xrf.rf
   (:require
-   [taoensso.tufte :as tufte]))
+   [net.cgrand.xforms :as x]))
 
 (def index
   (fn [rf]
@@ -44,6 +44,60 @@
       ([acc x]
        (rf acc x)))))
 
+(defn once-rf [xf]
+  (fn [rf]
+    (let [val (volatile! nil)
+          vacc (volatile! nil)
+          init (fn [] (xf (result-fn)))
+          xf-rf (volatile! (init))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (let []
+           #_(prn x)
+           #_(->> x (map (fn [e] (@xf-rf nil e))) (doall))
+           (@xf-rf nil x)
+           (if-let [x' (@xf-rf)]
+             (do
+               (prn ::reset xf)
+               (vreset! xf-rf (init))
+               (rf acc x'))
+             acc)))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.rf)
+   *e
+   (into [] (comp
+             (once-rf
+              (take-while #{0 1 5 6}))
+             )
+         (range 20))
+
+   (into [] (comp
+             (take-while #{0 1 5 6}))
+         (range 10))
+
+   (into [] (comp
+             (once-rf
+              (comp
+               index
+               jaq.http.xrf.header/response-line
+               (take 1)
+               #_(x/into []))))
+         ["HTTP/1.1 200 " "OK\n\r " "HTTP/1.1 400 FORBIDDEN\n\r " "HTTP/1.1 400"])
+
+   (into [] (comp
+             index
+             (once-rf
+              (comp
+               jaq.http.xrf.header/response-line
+               (take 1))))
+         "HTTP/1.1 200 OK\n\r ")
+
+   *e
+   )
+
 ;; TODO: choose
 
 
@@ -80,34 +134,34 @@
 #_(
 
    (into [] (comp
-              loop-rf
-              (fn sum [rf]
-                (let [s (volatile! 0)]
-                  (fn
-                    ([] (rf))
-                    ([acc] (rf acc))
-                    ([acc {:keys [i loop-rf] :as x}]
-                     (vswap! s + i)
-                     (rf acc (assoc x :sum @s))))))
-              (map (fn [{:keys [i] :as x}] (update x :i inc)))
-              (fn ss [rf]
-                (fn
-                  ([] (rf))
-                  ([acc] (rf acc))
-                  ([acc {:keys [i loop-rf] :as x}]
-                   (if (and (>= i 10) (< i 20))
-                     (loop-rf acc x)
-                     (rf acc x)))))
-              (map (fn [x] (select-keys x [:i :sum]))))
-             (->> (range 10)
-                  (map (fn [i] {:i i})))
-             )
+             loop-rf
+             (fn sum [rf]
+               (let [s (volatile! 0)]
+                 (fn
+                   ([] (rf))
+                   ([acc] (rf acc))
+                   ([acc {:keys [i loop-rf] :as x}]
+                    (vswap! s + i)
+                    (rf acc (assoc x :sum @s))))))
+             (map (fn [{:keys [i] :as x}] (update x :i inc)))
+             (fn ss [rf]
+               (fn
+                 ([] (rf))
+                 ([acc] (rf acc))
+                 ([acc {:keys [i loop-rf] :as x}]
+                  (if (and (>= i 10) (< i 20))
+                    (loop-rf acc x)
+                    (rf acc x)))))
+             (map (fn [x] (select-keys x [:i :sum]))))
+         (->> (range 10)
+              (map (fn [i] {:i i})))
+         )
 
    )
 
 
 
 #_(
-*ns*
-(in-ns 'jaq.http.xrf.rf)
-)
+   *ns*
+   (in-ns 'jaq.http.xrf.rf)
+   )

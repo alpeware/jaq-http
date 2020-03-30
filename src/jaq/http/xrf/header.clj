@@ -3,8 +3,7 @@
    [clojure.string :as string]
    [clojure.set :as set]
    [jaq.http.xrf.rf :as rf]
-   [jaq.http.xrf.params :as params]
-   [taoensso.tufte :as tufte :refer [defnp fnp]])
+   [jaq.http.xrf.params :as params])
   (:import
    [java.util Locale]))
 
@@ -24,7 +23,7 @@
                                 @val
                                 (assoc x k)
                                 (rf acc)))]
-      (fnp split
+      (fn split
            ([] (rf))
            ([acc] (rf acc))
            ([acc {:keys [index char] :as x}]
@@ -33,19 +32,21 @@
               (assoc-fn acc x)
 
               (pred char)
-              (tufte/p
-               k
-               (do
-                 (->> @vacc (apply str) f (vreset! val))
-                 (vreset! done true)
-                 (assoc-fn acc x)))
+              (do
+                (->> @vacc (apply str) f (vreset! val))
+                (vreset! done true)
+                (assoc-fn acc x))
 
               :else
-              (tufte/p
-               k
-               (do
-                 (vswap! vacc conj char)
-                 (rf acc)))))))))
+              (do
+                (vswap! vacc conj char)
+                (rf acc))))))))
+
+#_(
+
+
+
+   )
 
 (def query
   (fn [rf]
@@ -55,7 +56,7 @@
           decode (volatile! false)
           length (volatile! 0)
           done (volatile! true)]
-      (fnp query
+      (fn query
            ([] (rf))
            ([acc] (rf acc))
            ([acc {:keys [index char] :as x}]
@@ -77,9 +78,7 @@
 
               @decode
               (do
-                (tufte/p
-                 :query
-                 (parser-rf acc x)))))))))
+                (parser-rf acc x))))))))
 
 #_(
    *ns*
@@ -184,35 +183,15 @@
    status
    ignore-whitespace
    reason
-   (ignore #{\r \n})))
+   (ignore #{\return \newline})))
 
 #_(
    (in-ns 'jaq.http.xrf.header)
-   (let [buf jaq.http.client.nio/b
-         xform (comp
-                rf/index
-                response-line
-                headers)]
-     (->> (sequence xform buf) (first)))
 
-   (let [buf jaq.http.client.nio/b
-         xform (comp
-                rf/index
-                scheme
-                (ignore #{\/})
-                minor
-                (ignore #{\.})
-                major
-                ignore-whitespace
-                status
-                ignore-whitespace
-                reason
-                (ignore #{\r \n})
-                headers)]
-     (->> (sequence xform buf) (first)))
-
-
-
+   (into [] (comp
+             rf/index
+             response-line)
+         "HTTP/1.1 200 OK\n\r ")
    )
 
 (def request-line
@@ -246,9 +225,7 @@
          ([acc] (rf acc))
          ([acc {:keys [char] :as x}]
           (when-not @finalized
-            (tufte/p
-             ::finalized
-             (vswap! buf (fn [val arg] (->> (conj val arg) (take-last 4) (vec))) char)))
+            (vswap! buf (fn [val arg] (->> (conj val arg) (take-last 4) (vec))) char))
           (when (and (not @finalized)
                      (= (take-last 4 @buf) header-end))
             (vreset! finalized true))
@@ -266,7 +243,7 @@
                                  @headers-map
                                  (assoc x k)
                                  (rf acc)))]
-       (fnp header
+       (fn header
             ([] (rf))
             ([acc] (rf acc))
             ([acc {:keys [index char finalized] :as x}]

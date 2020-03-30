@@ -6,8 +6,7 @@
    [jaq.http.xrf.json :as json]
    [jaq.http.xrf.params :as params]
    [jaq.http.xrf.ssl :as ssl]
-   [jaq.http.xrf.rf :as rf]
-   [taoensso.tufte :as tufte :refer [defnp fnp]])
+   [jaq.http.xrf.rf :as rf])
   (:import
    [java.nio.channels SelectionKey]
    [java.nio ByteBuffer ByteOrder CharBuffer]))
@@ -166,10 +165,10 @@
                (rf acc))
 
              #_(and
-              @buf
-              (not @done)
-              (= @len content-length)
-              (or (= byte 13) (= byte 10)))
+                @buf
+                (not @done)
+                (= @len content-length)
+                (or (= byte 13) (= byte 10)))
              #_(rf acc)
 
              (and
@@ -192,6 +191,12 @@
              :else
              (assoc-fn acc x))
            (cond
+             (= content-length 0)
+             (do
+               (vswap! chunks conj "")
+               (vreset! done true)
+               (assoc-fn acc x))
+
              (and
               (not @done)
               (not @buf)
@@ -251,6 +256,97 @@
    *e
    )
 
+(def params-rf
+  (let [normalize (fn [s] (clojure.string/replace s #"-" "_"))
+        encode (fn [reqs [k v]]
+                 (conj reqs
+                       (->> k (name) (str) (normalize) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
+                       "="
+                       (->> v (str) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
+                       "&"))]
+    (comp
+     (fn get-rf [rf]
+       (fn params
+         ([] (rf))
+         ([acc] (rf acc))
+         ([acc {:http/keys [req method params query-params] :as x}]
+          (cond
+            (and (= :GET method) params)
+            (->> params
+                 (reduce encode ["?"])
+                 (butlast)
+                 (update x :http/req into)
+                 (rf acc))
+
+            (and (= :POST method) query-params)
+            (->> query-params
+                 (reduce encode ["?"])
+                 (butlast)
+                 (update x :http/req into)
+                 (rf acc))
+
+            :else
+            (rf acc x)))))
+     (fn post-rf [rf]
+       (fn params
+         ([] (rf))
+         ([acc] (rf acc))
+         ([acc {:http/keys [method params body]
+                {:keys [content-type]} :http/headers
+                :as x}]
+          (if (and (= :POST method)
+                   (= content-type "application/x-www-form-urlencoded")
+                   params)
+            (->> (assoc x
+                        :http/body (->> params
+                                        (reduce encode [])
+                                        (butlast)
+                                        (clojure.string/join)))
+                 (rf acc))
+            (rf acc x))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.http)
+   (into []
+         (comp params-rf)
+         [#:http{:method :GET :host "host" :path "path"
+                 :query-params {:bar :baz}
+                 :params {:foo :bar}
+                 :req []}])
+   *e
+   )
+
+(def headers-rf
+  (fn [rf]
+    (fn headers
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:http/keys [req headers] :as x}]
+       (if headers
+         (->> headers
+              (reduce
+               (fn [reqs [k v]]
+                 (conj reqs
+                       (->>
+                        (cond
+                          (keyword? k)
+                          (-> k (name) (str) (string/capitalize))
+                          :else
+                          k))
+                       ": "
+                       (->>
+                        (cond
+                          (instance? clojure.lang.Keyword v)
+                          (name v)
+                          :else
+                          v)
+                        (str))
+                       "\r\n"))
+               [])
+              (update x :http/req into)
+              (rf acc))
+         (rf acc x))))))
+
 (def http-rf
   (comp
    (map (fn [x] (assoc x :http/req [])))
@@ -262,48 +358,7 @@
           (update x :http/req conj " ")))
    (map (fn [{:http/keys [req path] :as x}]
           (update x :http/req conj path)))
-   (fn get-rf [rf]
-     (let [normalize (fn [s] (clojure.string/replace s #"-" "_"))]
-       (fn params
-         ([] (rf))
-         ([acc] (rf acc))
-         ([acc {:http/keys [req method params] :as x}]
-          (if (and (= :GET method) params)
-            (->> params
-                 (reduce
-                  (fn [reqs [k v]]
-                    (conj reqs
-                          (->> k (name) (str) (normalize) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
-                          "="
-                          (->> v (str) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
-                          "&"))
-                  ["?"])
-                 (butlast)
-                 (update x :http/req into)
-                 (rf acc))
-            (rf acc x))))))
-   (fn post-rf [rf]
-     (let [normalize (fn [s] (clojure.string/replace s #"-" "_"))]
-       (fn params
-         ([] (rf))
-         ([acc] (rf acc))
-         ([acc {:http/keys [method params body]
-                :as x}]
-          (if (and (= :POST method) params)
-            (->> params
-                 (reduce
-                  (fn [bodies [k v]]
-                    (conj bodies
-                          (->> k (name) (str) (normalize) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
-                          "="
-                          (->> v (str) (sequence (comp rf/index (params/encoder) (map :char))) (apply str))
-                          "&"))
-                  [])
-                 (butlast)
-                 (clojure.string/join)
-                 (assoc x :http/body)
-                 (rf acc))
-            (rf acc x))))))
+   params-rf
    (map (fn [{:http/keys [req] :as x}]
           (update x :http/req conj " ")))
    (map (fn [{:http/keys [req] :as x}]
@@ -315,36 +370,27 @@
    (map (fn [{:http/keys [req] :as x}]
           (update x :http/req conj "\r\n")))
    (map (fn [{:http/keys [headers body] :as x}]
-          (update x :http/headers conj {:content-length (count body)})))
-   (fn [rf]
-     (fn headers
-       ([] (rf))
-       ([acc] (rf acc))
-       ([acc {:http/keys [req headers] :as x}]
-        (if headers
-          (->> headers
-               (reduce
-                (fn [reqs [k v]]
-                  (conj reqs
-                        (->> k (name) (str) (string/capitalize))
-                        ": "
-                        (->>
-                         (cond
-                           (instance? clojure.lang.Keyword v)
-                           (name v)
-                           :else
-                           v)
-                         (str))
-                        "\r\n"))
-                [])
-               (update x :http/req into)
-               (rf acc))
-          (rf acc x)))))
+          (cond
+            (not body)
+            (update x :http/headers conj {:content-length 0})
+
+            (string? body)
+            (update x :http/headers conj {:content-length (count body)})
+
+            (instance? java.nio.ByteBuffer body)
+            (update x :http/headers conj {:content-length (.limit body)}))))
+   headers-rf
    (map (fn [{:http/keys [req] :as x}]
           (update x :http/req conj "\r\n")))
    (map (fn [{:http/keys [req body] :as x}]
-          (update x :http/req conj body)))))
+          (if body
+            (update x :http/req conj body)
+            x)))))
 
 #_(
+   (in-ns 'jaq.http.xrf.http)
+   (require 'jaq.http.xrf.http :reload)
 
+   (into [] (comp http-rf) [#:http{:method :GET :host "host" :path "path"
+                                   :params {:foo :bar}}])
    )

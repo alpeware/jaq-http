@@ -1,8 +1,7 @@
 (ns jaq.http.xrf.bip
   (:require
    [clojure.string :as string]
-   [jaq.http.xrf.rf :as rf]
-   [taoensso.tufte :as tufte :refer [defnp fnp]])
+   [jaq.http.xrf.rf :as rf])
   (:import
    [java.nio ByteBuffer ByteOrder CharBuffer]))
 

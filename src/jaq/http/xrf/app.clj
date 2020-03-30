@@ -6,7 +6,6 @@
    [jaq.http.xrf.params :as params]
    [jaq.http.xrf.response :as response]
    [jaq.http.xrf.rf :as rf]
-   [taoensso.tufte :as tufte]
    [net.cgrand.xforms :as x])
   (:import
    [java.util UUID]))
@@ -41,17 +40,6 @@
    *ns*
    (require 'jaq.http.xrf.app :reload)
    (in-ns 'jaq.http.xrf.app)
-   (tufte/profile
-    {}
-    (let [buf "GET / HTTP/1.1\r\nHost: jaq\r\n\r\n"
-          rf (let [result (volatile! nil)]
-               (fn
-                 ([] @result)
-                 ([acc] acc)
-                 ([acc x] (vreset! result x) acc)))
-          xf (echo rf)]
-      (run! (fn [x] (tufte/p :xf (xf nil x))) buf)
-      (rf)))
    *e
    )
 

@@ -8,8 +8,7 @@
    [jaq.http.xrf.header :as header]
    [jaq.http.xrf.http :as http]
    [jaq.http.xrf.params :as params]
-   [jaq.http.xrf.json :as json]
-   [taoensso.tufte :as tufte :refer [defnp fnp]]))
+   [jaq.http.xrf.json :as json]))
 
 ;; google oauth2
 (def google-client-id "32555940559.apps.googleusercontent.com")
