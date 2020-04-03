@@ -4,6 +4,7 @@
    [clojure.set :as set]
    [clojure.data.json :as j]
    [clojure.java.io :as io]
+   [jaq.async.fj :as fj]
    [jaq.gcp.auth :as auth]
    [jaq.gcp.appengine :as appengine]
    [jaq.gcp.storage :as storage]
@@ -12,6 +13,7 @@
    [jaq.http.xrf.http :as http]
    [jaq.http.xrf.json :as json]
    [jaq.http.xrf.params :as params]
+   [jaq.http.xrf.response :as response]
    [jaq.http.xrf.ssl :as ssl]
    [jaq.http.xrf.rf :as rf])
   (:import
@@ -35,8 +37,30 @@
 (defn non-blocking [^AbstractSelectableChannel channel]
   (.configureBlocking channel false))
 
-(defn ^SocketChannel channel [^SocketAddress socket-address]
+(defn ^SocketChannel channel! [^SocketAddress socket-address]
   (SocketChannel/open socket-address))
+
+(defn ^ServerSocketChannel server-channel! []
+  (ServerSocketChannel/open)
+  #_(-> (ServerSocketChannel/open)
+        (non-blocking)))
+
+(defn ^ServerSocket socket [^ServerSocketChannel ssc]
+  (.socket ssc)
+  #_(doto (.socket ssc)
+      (.setReuseAddress true)
+      (.setReceiveBufferSize socket-buffer-size)))
+
+#_(defn client-socket [^Socket socket]
+    (doto socket
+      (.setTcpNoDelay true)
+      (.setReceiveBufferSize socket-buffer-size)
+      (.setSendBufferSize socket-buffer-size)
+      (.setReuseAddress true)))
+
+;; TODO: backlog and address
+(defn bind! [port ^ServerSocket socket]
+  (.bind socket (InetSocketAddress. port)))
 
 (defn ^Selector selector! [] (Selector/open))
 
@@ -49,12 +73,30 @@
              (bit-or SelectionKey/OP_CONNECT SelectionKey/OP_WRITE SelectionKey/OP_READ)
              attachment))
 
+(defn ^SelectionKey listen! [^Selector selector attachment ^ServerSocketChannel server-channel]
+  (.register server-channel selector SelectionKey/OP_ACCEPT attachment))
+
+(defn ^SelectionKey readable [^Selector selector ^SocketChannel channel]
+  (.register channel selector SelectionKey/OP_READ))
+
 (defn wakeup! [selection-keys]
   (->> selection-keys
        (map (fn [^SelectionKey sk]
               (.selector sk)))
        (set)
        (map (fn [^Selector e] (.wakeup e)))))
+
+#_(defn ^SocketChannel client-channel! [^ServerSocketChannel ssc]
+    (.accept ssc)
+    #_(some-> (.accept ssc)
+              (non-blocking)))
+
+(defn accept! [^ServerSocketChannel server-channel]
+  (.accept server-channel)
+  #_(some->> server-channel
+             (.accept)
+             (client-channel)
+             (readable selector)))
 
 (defn connect! [^SelectionKey sk]
   ;; TODO: handle exceptions?
@@ -84,7 +126,7 @@
 
         (> n 0) ;; read some bytes
         (do
-          (prn ::read n)
+          #_(prn ::read n)
           (->> bb
                (.flip)
                (commit))
@@ -98,27 +140,10 @@
         ^SocketChannel channel (.channel sk)]
     (let [bb (block)]
       (when (.hasRemaining bb)
-        #_(prn ::write bb)
         (write-channel channel bb)
-        (prn ::wrote (.position bb))
+        #_(prn ::wrote (.position bb))
         (decommit bb))
-      sk)
-    #_(when-not (.isEmpty out) #_(and out (.isValid channel-key) (.isOpen channel))
-                (let [^ByteBuffer buf (.peekFirst out)
-                      n (write-channel channel buf)
-                      r (.remaining buf)]
-                  (prn ::wrote n)
-                  (if (= r 0) ;; end of buf
-                    (do
-                      (.removeFirst out)
-                      #_(.interestOps sk SelectionKey/OP_READ)
-                      #_(-> sk (.selector) (.wakeup))
-                      sk)
-
-                    (do
-                      #_(.interestOps sk SelectionKey/OP_WRITE)
-                      #_(-> sk (.selector) (.wakeup))
-                      sk))))))
+      sk)))
 
 ;; TODO: add event-loop RF?
 (def selector-rf
@@ -143,7 +168,7 @@
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:http/keys [req]
+        ([acc {:nio/keys [^SelectionKey selection-key]
                :as x}]
          (when-not @attachment
            (->> {:nio/in (->> [x] (into [] bip/bip-rf) (first))
@@ -151,7 +176,8 @@
                  :context/rf rf
                  :context/acc acc
                  :context/x x}
-                (vreset! attachment)))
+                (vreset! attachment))
+           (some-> selection-key (.attach @attachment)))
          (->> (assoc x :nio/attachment @attachment)
               (rf acc)))))))
 
@@ -161,25 +187,35 @@
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:http/keys [req]
+        ([acc {:nio/keys [selection-key]
+               :http/keys [req]
+               :context/keys [^ByteBuffer src]
                {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
                :as x}]
          (when-not @once
            (let [dst (reserve)
-                 src (->> req
-                          (clojure.string/join)
-                          (.getBytes)
-                          (ByteBuffer/wrap))]
-             (prn ::req req src dst bip)
+                 #_src  #_(->> req
+                               (clojure.string/join)
+                               (.getBytes)
+                               (ByteBuffer/wrap))
+                 ]
              (.put dst src)
+             (.rewind src)
              (.flip dst)
              (commit dst)
+             (write! selection-key)
              (vreset! once true)))
-         (rf acc x))))))
+         (let [bb (block)]
+           (if (.hasRemaining bb)
+             (rf acc)
+             (rf acc x))))))))
 
 (def response-rf
   (fn [rf]
-    (let [once (volatile! false)]
+    (let [once (volatile! false)
+          parsed (volatile! false)
+          parsed! (fn []
+                    (vswap! parsed not))]
       (fn
         ([] (rf))
         ([acc] (rf acc))
@@ -188,7 +224,7 @@
                :as x}]
          (let [bb (block)]
            (when (.hasRemaining bb)
-             (prn ::res bb)
+             #_(prn ::res bb)
              #_(->> bb
                     (.decode jaq.http.xrf.params/default-charset)
                     (.toString)
@@ -198,34 +234,73 @@
                   (.limit)
                   (range)
                   (map (fn [_]
-                         (let [c (-> bb (.get) (char))]
-                           #_(prn c)
-                           (->> c (assoc x :char) (rf acc)))))
+                         (let [b (-> bb (.get))]
+                           (if @parsed
+                             (->> (assoc x
+                                         :context/parsed! parsed!
+                                         ;;:context/done! done!
+                                         :byte b)
+                                  (rf acc))
+                             (->> (assoc x
+                                         :context/parsed! parsed!
+                                         ;;:context/done! done!
+                                         :char (char b))
+                                  (rf acc))))))
+                  #_(map (fn [_]
+                           (let [c (-> bb (.get) (char))]
+                             #_(prn c)
+                             (->> c (assoc x :char) (rf acc)))))
                   (doall))
              (decommit bb))
            (rf acc)))))))
 
+*e
+
 (def channel-rf
-  (comp
-   (fn [rf]
-     (let [selection-key (volatile! nil)]
-       (fn
-         ([] (rf))
-         ([acc] (rf acc))
-         ([acc {:http/keys [host port]
-                :nio/keys [selector attachment]
-                :as x}]
-          (when-not @selection-key
-            (->> (address host port)
-                 (channel)
-                 (non-blocking)
-                 (register! selector attachment)
-                 ((fn [^SelectionKey e]
-                    (.wakeup selector)
-                    e))
-                 (vreset! selection-key)))
-          (->> (assoc x :nio/selection-key ^SelectionKey @selection-key)
-               (rf acc))))))))
+  (fn [rf]
+    (let [selection-key (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port]
+               :nio/keys [selector attachment]
+               :as x}]
+         (when-not @selection-key
+           (->> (address host port)
+                (channel!)
+                (non-blocking)
+                (register! selector attachment)
+                ((fn [^SelectionKey e]
+                   (.wakeup selector)
+                   e))
+                (vreset! selection-key)))
+         (->> (assoc x :nio/selection-key ^SelectionKey @selection-key)
+              (rf acc)))))))
+
+(def bind-rf
+  (fn [rf]
+    (let [server-channel (volatile! nil)
+          selection-key (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port]
+               :nio/keys [selector attachment]
+               :as x}]
+         (when-not @server-channel
+           (->> (server-channel!)
+                (non-blocking)
+                (vreset! server-channel)
+                (listen! selector attachment)
+                (vreset! selection-key)
+                ^SelectionKey (.channel)
+                (socket)
+                (bind! port))
+           (prn ::listening port))
+         (->> (assoc x
+                     :nio/server-channel ^ServerSocketChannel @server-channel
+                     :nio/selection-key ^SelectionKey @selection-key)
+              (rf acc)))))))
 
 (def read-rf
   (fn [rf]
@@ -233,22 +308,19 @@
       ([] (rf))
       ([acc] (rf acc))
       ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
-       (when (.isReadable selection-key)
+       (when (and (.isValid selection-key)
+                  (.isReadable selection-key))
          (read! selection-key))
-       (rf acc x)
-       #_(if (and
-              (.isReadable selection-key)
-              (> 0 (read! selection-key)))
-           (rf acc x)
-           (rf acc))))))
+       (rf acc x)))))
 
 (def write-rf
   (fn [rf]
     (fn
       ([] (rf))
       ([acc] (rf acc))
-      ([acc {:nio/keys [selection-key] :as x}]
-       (when (.isWritable selection-key)
+      ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
+       (when (and (.isValid selection-key)
+                  (.isWritable selection-key))
          (write! selection-key))
        (rf acc x)))))
 
@@ -257,10 +329,61 @@
     (fn
       ([] (rf))
       ([acc] (rf acc))
-      ([acc {:nio/keys [selection-key] :as x}]
+      ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
        (when (.isConnectable selection-key)
          (connect! selection-key))
        (rf acc x)))))
+
+(def valid-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
+       (when-not (.isValid selection-key)
+         (.cancel selection-key))
+       (rf acc x)))))
+
+(defn accept-rf [xf]
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [attachment
+                        selector
+                        ^SelectionKey selection-key
+                        server-channel]
+             :context/keys [src]
+             :as x}]
+       (when (.isAcceptable selection-key)
+         (some->> server-channel
+                  (accept!)
+                  (non-blocking)
+                  (register! selector
+                             (assoc attachment
+                                    :context/rf (xf (rf/result-fn))))))
+       (rf acc x)))))
+
+(def select-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [selector]
+             :context/keys [src]
+             :as x}]
+       (when (> (select! selector) 0)
+         (let [^Set keys-set (.selectedKeys selector)
+               selected-keys (into #{} keys-set)]
+           (.clear keys-set)
+           (doseq [^SelectionKey sk selected-keys]
+             (let [{:context/keys [rf acc x]
+                    :as attachment} (.attachment sk)]
+               (rf acc (assoc x
+                              :context/src src
+                              :nio/selection-key sk
+                              :nio/attachment attachment))))))
+       (rf acc)))))
 
 (def process-rf
   (comp
@@ -373,44 +496,155 @@
   (doseq [^SelectionKey sk selected-keys]
     (let [{:context/keys [rf acc x]
            :as attachment} (.attachment sk)]
-      #_(prn ::process sk)
       (rf acc (assoc x :nio/attachment attachment)))))
-
-(defn process-keys! [selected-keys]
-  ;; TODO: Dynamically determine batch size
-  (let [batch-size 400]
-    (->> selected-keys
-         (process!))
-    selected-keys))
-
-(defn keys! [selected-keys
-              ^SelectionKey sk]
-  (or
-   (some->>
-    ;; TODO: use ready set directly
-    (try
-      (when (.isConnectable sk)
-        (connect! sk))
-
-      (when (.isReadable sk)
-        (read! sk))
-
-      (when (.isWritable sk)
-        (write! sk))
-
-      sk
-      (catch CancelledKeyException _
-        nil))
-    (conj selected-keys))
-   selected-keys))
 
 (defn reactor-main [^Selector selector]
   (when (> (select! selector) 0)
     (let [^Set keys-set (.selectedKeys selector)
-          ready-set (into #{} keys-set)
-          _ (.clear keys-set)]
-      #_(->> ready-set (reduce keys! []))
-      (->> ready-set process!))))
+          selected-keys (into #{} keys-set)]
+      (.clear keys-set)
+      (doseq [^SelectionKey sk selected-keys]
+        (let [{:context/keys [rf acc x]
+               :as attachment} (.attachment sk)]
+          (rf acc (assoc x :nio/attachment attachment)))))))
+
+(defn -main [& args]
+  (let [selector (selector!)
+        port (Integer/parseInt (first args))
+        xf (comp
+            attachment-rf
+            (comp
+             (map (fn [{:http/keys [body status]
+                        :keys [headers method path minor major]
+                        :as x}]
+                    (->> (assoc x
+                                :http/body "OK"
+                                :http/status 200
+                                :http/reason "OK"
+                                :http/headers {:content-type "text/plain"
+                                               :connection "close"}))))
+             (map (fn [x] (assoc x :http/req [])))
+             (map (fn [{:http/keys [req headers host] :as x}]
+                    (assoc x :http/headers (conj {:Host host} headers))))
+             (map (fn [{:http/keys [req] :as x}]
+                    (update x :http/req conj "HTTP")))
+             (map (fn [{:http/keys [req] :as x}]
+                    (update x :http/req conj "/")))
+             (map (fn [{:http/keys [req major minor] :as x}]
+                    (update x :http/req conj (str major "." minor))))
+             (map (fn [{:http/keys [req] :as x}]
+                    (update x :http/req conj " ")))
+             (map (fn [{:http/keys [req major status reason] :as x}]
+                    (update x :http/req conj (str status " " reason))))
+             (map (fn [{:http/keys [req] :as x}]
+                    (update x :http/req conj "\r\n")))
+             (map (fn [{:http/keys [headers body] :as x}]
+                    (cond
+                      (not body)
+                      (update x :http/headers conj {:content-length 0})
+
+                      (string? body)
+                      (update x :http/headers conj {:content-length (count body)})
+
+                      (instance? java.nio.ByteBuffer body)
+                      (update x :http/headers conj {:content-length (.limit body)}))))
+             http/headers-rf
+             (map (fn [{:http/keys [req] :as x}]
+                    (update x :http/req conj "\r\n")))
+             (map (fn [{:http/keys [req body] :as x}]
+                    (if body
+                      (update x :http/req conj body)
+                      x)))
+             (map (fn [{:http/keys [req]
+                        :as x}]
+                    (->> (assoc x
+                                :context/src (->> req
+                                                  (clojure.string/join)
+                                                  (.getBytes)
+                                                  (ByteBuffer/wrap)))))))
+            bind-rf
+            (accept-rf (comp
+                        attachment-rf
+                        valid-rf
+                        read-rf
+                        write-rf
+                        response-rf
+                        #_header/request-line
+                        #_header/headers
+                        #_(comp
+                           (map (fn [{:http/keys [body status]
+                                      :keys [headers method path minor major]
+                                      :as x}]
+                                  (->> (assoc x
+                                              :http/body "OK"
+                                              :http/status 200
+                                              :http/reason "OK"
+                                              :http/headers {:content-type "text/plain"
+                                                             :connection "close"}))))
+                           (map (fn [x] (assoc x :http/req [])))
+                           (map (fn [{:http/keys [req headers host] :as x}]
+                                  (assoc x :http/headers (conj {:Host host} headers))))
+                           (map (fn [{:http/keys [req] :as x}]
+                                  (update x :http/req conj "HTTP")))
+                           (map (fn [{:http/keys [req] :as x}]
+                                  (update x :http/req conj "/")))
+                           (map (fn [{:http/keys [req major minor] :as x}]
+                                  (update x :http/req conj (str major "." minor))))
+                           (map (fn [{:http/keys [req] :as x}]
+                                  (update x :http/req conj " ")))
+                           (map (fn [{:http/keys [req major status reason] :as x}]
+                                  (update x :http/req conj (str status " " reason))))
+                           (map (fn [{:http/keys [req] :as x}]
+                                  (update x :http/req conj "\r\n")))
+                           (map (fn [{:http/keys [headers body] :as x}]
+                                  (cond
+                                    (not body)
+                                    (update x :http/headers conj {:content-length 0})
+
+                                    (string? body)
+                                    (update x :http/headers conj {:content-length (count body)})
+
+                                    (instance? java.nio.ByteBuffer body)
+                                    (update x :http/headers conj {:content-length (.limit body)}))))
+                           http/headers-rf
+                           (map (fn [{:http/keys [req] :as x}]
+                                  (update x :http/req conj "\r\n")))
+                           (map (fn [{:http/keys [req body] :as x}]
+                                  (if body
+                                    (update x :http/req conj body)
+                                    x))))
+                        request-rf
+                        (map (fn [{:nio/keys [^SelectionKey selection-key]}]
+                               #_(prn ::closing)
+                               (some-> selection-key (.channel) (.close))
+                               (.cancel selection-key)))))
+            select-rf)
+        rf (xf (rf/result-fn))
+        stop (volatile! false)
+        stop! (fn []
+                (prn ::stopping)
+                (vreset! stop true)
+                (doseq [sk (.keys selector)]
+                  (some-> sk (.channel) (.close))
+                  (.cancel sk))
+                (.close selector))
+        steps (fn [acc x]
+                (if-let [r (rf)]
+                  r
+                  (do
+                    (rf acc x)
+                    (when-not @stop
+                      #_(prn ::recur)
+                      (recur acc x)))))]
+    (steps nil
+           {:nio/selector selector
+            :context/bip-size (* 1 4096)
+            :http/host "localhost"
+            :http/scheme :http
+            :http/port port
+            :http/path "/"
+            :http/minor 1 :http/major 1
+            :http/method :GET})))
 
 #_(
    *e
@@ -418,187 +652,106 @@
    (in-ns 'jaq.http.xrf.nio)
    (require 'jaq.http.xrf.nio :reload)
 
-   (let [b (-> (* 1 1024)
-               (ByteBuffer/allocateDirect)
-               (.order (ByteOrder/nativeOrder)))]
-     (.order b))
+   (->> (System/getenv)
+        (into {})
+        (clojure.walk/keywordize-keys))
 
-   ;; Bip Buffer
-   ;; see https://www.codeproject.com/Articles/3479/The-Bip-Buffer-The-Circular-Buffer-with-a-Twist
-   (let [page-size 4096
-         size (* 2 page-size)
-         write-buf (-> size
-                       (+ page-size)
-                       (ByteBuffer/allocateDirect)
-                       (.alignedSlice page-size)
-                       (.order (ByteOrder/nativeOrder)))
-         write-buf-a (.duplicate buf)
-         write-buf-b (.duplicate buf)
-         freespace-a-fn (fn []
-                          (- (.capacity write-buf-a) (.position write-buf-a)
-                             (.limit write-buf-a)))
-         freespace-b-fn (fn []
-                          (- (.position write-buf-a) (.position write-buf-b)
-                             (.limit write-buf-b)))
-         reserve-fn (fn []
-                      (if (> (.limit write-buf-b) 0)
-                        (let [freespace (freespace-b-fn)]
-                          (-> write-buf
-                              (.position (.limit write-buf-b))
-                              (.limit (.position write-buf-a))
-                              (.slice)))
-                        (let [freespace (freespace-a-fn)]
-                          (if (>= freespace (.position write-buf-a))
-                            (-> write-buf
-                                (.position (+ (.limit write-buf-a)
-                                              (.position write-buf-a)))
-                                (.limit (+ (.capacity write-buf)))
-                                (.slice))
-                            (-> write-buf
-                                (.position 0)
-                                (.slice)
-                                (.limit (.position write-buf-a)))))))
-         commit-fn (fn [bb]
-                     (cond
-                       (= (.limit write-buf-a) (.limit write-buf-b) 0)
-                       (-> write-buf-a (.limit (.limit bb)))
-
-                       (>= (freespace-a-fn) (.position write-buf-a))
-                       (let [lim (-> write-buf-a (.limit) (+ (.limit bb)))]
-                         (-> write-buf-a (.limit lim)))
-
-                       :else
-                       (let [lim (-> write-buf-b (.limit) (+ (.limit bb)))]
-                         (-> write-buf-b (.limit lim)))))
-         block-fn (fn []
-                    (.slice write-buf-a))
-         decommit-fn (fn [bb]
-                       (let [pos (-> write-buf-a (.position) (+ (.position bb)))
-                             lim (-> write-buf-a (.limit))]
-                         (if (>= pos lim)
-                           (do
-                             (-> write-buf-a (.position (.position write-buf-b)))
-                             (-> write-buf-a (.limit (.limit write-buf-b)))
-                             (-> write-buf-b (.position 0))
-                             (-> write-buf-b (.limit 0)))
-                           (-> write-buf-a (.position pos)))
-                         bb))]
-     (.limit write-buf-a 0)
-     (.limit write-buf-b 0)
-     {:write-buf write-buf
-      :write-buf-a write-buf-a :write-buf-b write-buf-b
-      :reserve reserve-fn :commit commit-fn
-      :block block-fn :decommit decommit-fn})
-   (def b *1)
-   (-> b :write-buf-a)
-   (-> b :write-buf-b)
-   (-> b :write-buf)
-
-   (let [{:keys [write-buf-a write-buf-b write-buf]} b]
-     (- (.capacity write-buf-a) (.position write-buf-a)
-        (.limit write-buf-a))
-     #_(-> write-buf
-           (.position (+ (.limit write-buf-a)
-                         (.position write-buf-a)))
-           (.limit (+ (.capacity write-buf)))
-           (.slice))
-     (- (.position write-buf-a) (.position write-buf-b)
-        (.limit write-buf-b)))
-   b
-
-   (let [{:keys [reserve commit block decommit]} b
-         bb (reserve)
-         lim (/ (.limit bb) 1)
-         ]
-     #_(->> lim #_(dec) #_(dec) (range) (map (fn [i] (.put bb (unchecked-byte i)))) (doall))
-     #_(.flip bb)
-     #_(commit bb)
-     bb)
-
-   (let [{:keys [reserve commit block decommit]} b
-         bb (block)]
-     #_(->> (/ (.limit bb) 4) (dec) (range) (map (fn [e] (.getInt bb))) (take-last 102))
-     (->> (.limit bb) #_(dec) #_(dec) (range) (map (fn [e] (.get bb))) (take-last 10) (doall))
-     #_(.getInt bb)
-     #_(.getInt bb)
-     #_bb
-     (decommit bb))
-
-
+   (slurp "http://localhost:8081/")
 
    ;; MTU size per interface
    (->> (java.net.NetworkInterface/getNetworkInterfaces)
         (enumeration-seq)
         (map (fn [e] [(.getDisplayName e) (.getMTU e)])))
 
-   (let [read-buffer (ByteBuffer/allocateDirect (* 256 1024))
-         selector (selector!)
+   ;; server
+   (let [selector (selector!)
          xf (comp
-             http/http-rf
-             (selector-rf selector)
              attachment-rf
-             #_request-rf
-             channel-rf
-             ssl/ssl-rf
-             ssl/handshake-rf
-             ssl/request-ssl-rf
-             ssl/response-ssl-rf
-             (comp
-              #_rf/index
-              header/response-line
-              header/headers
-              (drop 1)
-              http/chunked-rf
-              #_(drop 1)
-              #_(map (fn [{:keys [char] :as e}] (prn char) e))
-              (json/decoder)
-              (json/process)
-              (take 1)
-              (map (fn [{:keys [json] :as e}]
-                     (let [normalize (fn [k] (-> k (name) (string/replace #"_" "-") (keyword)))
-                           f (fn [[k v]] (if (keyword? k) [(normalize k) v] [k v]))]
-                       (->> json
-                            (clojure.walk/postwalk (fn [x] (if (map? x) (into {} (map f x)) x)))
-                            (assoc e :json)))))
-              (map (fn [{{:keys [expires-in]} :json
-                         :as e}]
-                     (if expires-in
-                       (->> expires-in
-                            (* 1000)
-                            (+ (System/currentTimeMillis))
-                            (assoc-in e [:json :expires-in]))
-                       e)))
-              #_(take 1)
-              (map (fn [e] (prn ::response e) e))))
-         rf (xf (rf/result-fn))]
-     (rf nil r
-         #_jaq.gcp.auth/c
-         #_{:http/host "jaq.alpeware.com"
-            :http/scheme :https
-            :http/port 443 ;; TODO: infer from scheme
-            :http/path "/"
-            :http/minor 1 :http/major 1
-            :http/method :GET})
-     #_(some->>
-        (reactor-main read-buffer selector)
-        (process-keys!)
-        (wakeup!)
-        (dorun))
-     #_(Thread/sleep 100)
-     #_selector
-     (let [step (fn []
-                  (some->>
-                   (reactor-main read-buffer selector)
-                   (process-keys!)
-                   (wakeup!)
-                   (doall)))
-           steps (fn [n]
-                   (->> (range)
-                        (take n)
-                        (map (fn [_] (step)))
-                        (doall)))]
-       (steps 10)
-       steps))
+             bind-rf
+             (accept-rf (comp
+                         attachment-rf
+                         valid-rf
+                         read-rf
+                         write-rf
+                         response-rf
+                         header/request-line
+                         header/headers
+                         (map (fn [{:http/keys [body status] :as x}]
+                                (->> (assoc x
+                                            :http/body "OK"
+                                            :http/status 200
+                                            :http/reason "OK"
+                                            :http/headers {:content-type "text/plain"
+                                                           :connection "keep-alive"}))))
+                         (comp
+                          (map (fn [x] (assoc x :http/req [])))
+                          (map (fn [{:http/keys [req headers host] :as x}]
+                                 (assoc x :http/headers (conj {:Host host} headers))))
+                          (map (fn [{:http/keys [req] :as x}]
+                                 (update x :http/req conj "HTTP")))
+                          (map (fn [{:http/keys [req] :as x}]
+                                 (update x :http/req conj "/")))
+                          (map (fn [{:http/keys [req major minor] :as x}]
+                                 (update x :http/req conj (str major "." minor))))
+                          (map (fn [{:http/keys [req] :as x}]
+                                 (update x :http/req conj " ")))
+                          (map (fn [{:http/keys [req major status reason] :as x}]
+                                 (update x :http/req conj (str status " " reason))))
+                          (map (fn [{:http/keys [req] :as x}]
+                                 (update x :http/req conj "\r\n")))
+                          (map (fn [{:http/keys [headers body] :as x}]
+                                 (cond
+                                   (not body)
+                                   (update x :http/headers conj {:content-length 0})
+
+                                   (string? body)
+                                   (update x :http/headers conj {:content-length (count body)})
+
+                                   (instance? java.nio.ByteBuffer body)
+                                   (update x :http/headers conj {:content-length (.limit body)}))))
+                          http/headers-rf
+                          (map (fn [{:http/keys [req] :as x}]
+                                 (update x :http/req conj "\r\n")))
+                          (map (fn [{:http/keys [req body] :as x}]
+                                 (if body
+                                   (update x :http/req conj body)
+                                   x))))
+                         #_http/http-rf
+                         request-rf))
+             select-rf)
+         rf (xf (rf/result-fn))
+         stop (volatile! false)
+         stop! (fn []
+                 (prn ::stopping)
+                 (vreset! stop true)
+                 (doseq [sk (.keys selector)]
+                   (some-> sk (.channel) (.close))
+                   (.cancel sk))
+                 (.close selector))
+         steps (fn [acc x]
+                 (if-let [r (rf)]
+                   (def x r)
+                   (do
+                     (rf acc x)
+                     (when-not @stop
+                       (prn ::recur)
+                       (recur acc x)))))]
+     (fj/thread
+       (steps nil
+              {:nio/selector selector
+               :context/bip-size (* 1 4096)
+               :http/host "localhost"
+               :http/scheme :http
+               :http/port 10100
+               :http/path "/"
+               :http/minor 1 :http/major 1
+               :http/method :GET}))
+     (def stop! stop!))
+
+   (stop!)
+   x
+   *e
+   *ns*
 
    ;; http
    (let [selector (selector!)
@@ -614,10 +767,10 @@
               #_rf/index
               header/response-line
               header/headers
-              (drop 1)
-              #_http/chunked-rf
-              (take 1)
-              (map (fn [e] (prn ::response e) e))))
+              http/parsed-rf
+              http/chunked-rf
+              http/text-rf
+              #_(map (fn [e] (prn ::response e) e))))
          rf (xf (rf/result-fn))]
      (rf nil
          {:nio/selector selector
@@ -630,12 +783,15 @@
      (let [step (partial reactor-main selector)
            steps (fn []
                    (if-let [r (rf)]
-                     r
+                     (def x r)
                      (do
                        (step)
                        (recur))))]
        (steps)
        #_{:rf rf :step step :steps steps}))
+   (def x *1)
+   (-> x :headers)
+   *ns*
 
    ;; https
    (let [selector (selector!)
@@ -919,6 +1075,7 @@
        #_step
        #_{:rf rf :step step :steps steps}))
 
+   (slurp "https://alpeware-foo-bar.appspot.com/")
    *ns*
    *e
    (def x *1)
@@ -1130,43 +1287,43 @@
                            (> content-length 0)))
              ;; services
              #_(comp
-              (fn [rf]
-                (let [once (volatile! false)]
-                  (fn
-                    ([] (rf))
-                    ([acc] (rf acc))
-                    ([acc {:appengine/keys [project]
-                           {:keys [id]} :http/json
-                           :http/keys [params]
-                           :keys [headers]
-                           :context/keys [parsed! done!]
-                           :as x}]
-                     (when-not @once
-                       (parsed!)
-                       (done!)
-                       (prn ::app id headers)
-                       (vreset! once true))
-                     (-> x
-                         (dissoc :http/body)
-                         (dissoc :http/chunks)
-                         (assoc-in [:http/params :app] id)
-                         (assoc-in [:http/params :version] "v4")
-                         (->> (rf acc)))))))
-              ;;appengine/list-versions-rf
-              ;;appengine/list-services-rf
-              appengine/list-instances-rf
-              appengine/rest-service-rf
-              http/http-rf
-              ssl/request-ssl-rf
-              ssl/response-ssl-rf
-              #_(map (fn [x] (prn x) x))
-              header/response-line
-              #_(map (fn [x] (prn x) x))
-              header/headers
-              http/parsed-rf
-              http/chunked-rf
-              http/text-rf
-              body-rf))
+                (fn [rf]
+                  (let [once (volatile! false)]
+                    (fn
+                      ([] (rf))
+                      ([acc] (rf acc))
+                      ([acc {:appengine/keys [project]
+                             {:keys [id]} :http/json
+                             :http/keys [params]
+                             :keys [headers]
+                             :context/keys [parsed! done!]
+                             :as x}]
+                       (when-not @once
+                         (parsed!)
+                         (done!)
+                         (prn ::app id headers)
+                         (vreset! once true))
+                       (-> x
+                           (dissoc :http/body)
+                           (dissoc :http/chunks)
+                           (assoc-in [:http/params :app] id)
+                           (assoc-in [:http/params :version] "v4")
+                           (->> (rf acc)))))))
+                ;;appengine/list-versions-rf
+                ;;appengine/list-services-rf
+                appengine/list-instances-rf
+                appengine/rest-service-rf
+                http/http-rf
+                ssl/request-ssl-rf
+                ssl/response-ssl-rf
+                #_(map (fn [x] (prn x) x))
+                header/response-line
+                #_(map (fn [x] (prn x) x))
+                header/headers
+                http/parsed-rf
+                http/chunked-rf
+                http/text-rf
+                body-rf))
          rf (xf (rf/result-fn))]
      (rf nil
          (merge
