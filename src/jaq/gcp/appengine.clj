@@ -183,7 +183,11 @@
                       :maxIdleInstances 1
                       :maxPendingLatency "15s"
                       :minIdleInstances 0
-                      :minPendingLatency "10s"}})
+                      :minPendingLatency "10s"
+                      :standardSchedulerSettings {:targetCpuUtilization 0.95
+                                                  :targetThroughputUtilization 0.95
+                                                  :minInstances 0
+                                                  :maxInstances 1}}})
 
 ;; TODO: static file handlers
 (def handlers

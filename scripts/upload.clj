@@ -119,7 +119,7 @@
         (merge
          {:nio/selector selector
           :context/bip-size (* 5 4096)
-          :file/prefix "app/v2"
+          :file/prefix "app/v4"
           :file/dir "./target"
           :storage/bucket "staging.alpeware-foo-bar.appspot.com"
           :http/params {:bucket "staging.alpeware-foo-bar.appspot.com"}

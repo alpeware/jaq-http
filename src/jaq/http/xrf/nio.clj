@@ -15,7 +15,8 @@
    [jaq.http.xrf.params :as params]
    [jaq.http.xrf.response :as response]
    [jaq.http.xrf.ssl :as ssl]
-   [jaq.http.xrf.rf :as rf])
+   [jaq.http.xrf.rf :as rf]
+   [net.cgrand.xforms :as x])
   (:import
    [java.nio.channels.spi AbstractSelectableChannel]
    [java.nio.channels
@@ -30,6 +31,9 @@
     SSLContext SSLSession]
    [java.util.concurrent ConcurrentLinkedDeque]
    [java.util Set]))
+
+(def read-op SelectionKey/OP_READ)
+(def write-op SelectionKey/OP_WRITE)
 
 (defn address [^String host ^Integer port]
   (InetSocketAddress. host port))
@@ -70,14 +74,24 @@
 (defn register! [^Selector selector attachment ^SocketChannel channel]
   (.register channel
              selector
-             (bit-or SelectionKey/OP_CONNECT SelectionKey/OP_WRITE SelectionKey/OP_READ)
+             (bit-or SelectionKey/OP_CONNECT #_SelectionKey/OP_WRITE SelectionKey/OP_READ)
              attachment))
 
 (defn ^SelectionKey listen! [^Selector selector attachment ^ServerSocketChannel server-channel]
   (.register server-channel selector SelectionKey/OP_ACCEPT attachment))
 
-(defn ^SelectionKey readable [^Selector selector ^SocketChannel channel]
-  (.register channel selector SelectionKey/OP_READ))
+(defn ^SelectionKey readable [^Selector selector ^SocketChannel channel attachment]
+  (.register channel selector SelectionKey/OP_READ attachment))
+
+(defn ^SelectionKey writable [^Selector selector ^SocketChannel channel attachment]
+  (.register channel selector SelectionKey/OP_WRITE attachment))
+
+(defn ^SelectionKey readable! [^SelectionKey selection-key]
+  (.interestOps selection-key SelectionKey/OP_READ))
+
+(defn ^SelectionKey writable! [^SelectionKey selection-key]
+  (.interestOps selection-key SelectionKey/OP_WRITE))
+
 
 (defn wakeup! [selection-keys]
   (->> selection-keys
@@ -126,7 +140,7 @@
 
         (> n 0) ;; read some bytes
         (do
-          #_(prn ::read n)
+          (prn ::read n)
           (->> bb
                (.flip)
                (commit))
@@ -139,28 +153,13 @@
          :as attachment} (.attachment sk)
         ^SocketChannel channel (.channel sk)]
     (let [bb (block)]
+      #_(prn ::bb bb)
       (when (.hasRemaining bb)
         (write-channel channel bb)
         #_(prn ::wrote (.position bb))
         (decommit bb))
-      sk)))
-
-;; TODO: add event-loop RF?
-(def selector-rf
-  (fn [rf]
-    (let [sl (volatile! nil)]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:http/keys [host port]
-               :nio/keys [selector]
-               :as x}]
-         (when-not @sl
-           (let [selector (or selector (selector!))]
-             (->> selector
-                  (vreset! sl))))
-         (->> (assoc x :nio/selector ^Selector @sl)
-              (rf acc)))))))
+      #_sk
+      (.position bb))))
 
 (def attachment-rf
   (fn [rf]
@@ -181,6 +180,105 @@
          (->> (assoc x :nio/attachment @attachment)
               (rf acc)))))))
 
+(def send-rf
+  (fn [rf]
+    (let [once (volatile! false)
+          request (volatile! nil)
+          requests (volatile! nil)
+          clear! (fn [] (vreset! requests nil))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               :nio/keys [selection-key selector attachment]
+               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               :as x}]
+         (when-not @requests
+           (->> req
+                (map (fn [e]
+                       (cond
+                         (string? e)
+                         (-> (.getBytes e)
+                             (ByteBuffer/wrap))
+
+                         (instance? ByteBuffer e)
+                         e)))
+                (vreset! requests)))
+         (when (and @request (not (.hasRemaining @request)))
+           (vreset! request nil))
+         (when (and (seq @requests) (not @request))
+           (->> @requests
+                (first)
+                (vreset! request))
+           (vswap! requests rest))
+         (if (and @request (.hasRemaining @request))
+           (let [dst (reserve)
+                 limit (min (.remaining @request) (.remaining dst))
+                 src (-> @request (.duplicate) #_(.limit limit))
+                 pos (-> @request (.position))]
+             (->> src (.position) (+ limit) (.limit src))
+             (->> limit (+ pos) (.position @request))
+             #_(.put dst @request)
+             (.put dst src)
+             (.flip dst)
+             (commit dst)
+             #_(write! selection-key)
+             (let [written (write! selection-key)]
+               (if-not (> written 0)
+                 (do
+                   ;; socket buffer full so waiting to clear
+                   (writable selector (.channel selection-key) (.attachment selection-key))
+                   #_(.wakeup selector)
+                   acc)
+                 (do
+                   #_(prn ::recur written)
+                   (recur acc x)))))
+           (do
+             #_(prn ::done)
+             (->> (assoc x :context/clear! clear!)
+                  (rf acc)))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.nio)
+   *ns*
+   *e
+   foo
+   )
+
+(def receive-rf
+  (fn [rf]
+    (let [once (volatile! false)
+          parsed (volatile! false)
+          parsed! (fn []
+                    (vswap! parsed not))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/in} :nio/attachment
+               :as x}]
+         (let [bb (block)]
+           (when (.hasRemaining bb)
+             (->> bb
+                  (.limit)
+                  (range)
+                  (map (fn [_]
+                         (let [b (-> bb (.get))]
+                           (if @parsed
+                             (->> (assoc x
+                                         :context/parsed! parsed!
+                                         ;;:context/done! done!
+                                         :byte b)
+                                  (rf acc))
+                             (->> (assoc x
+                                         :context/parsed! parsed!
+                                         ;;:context/done! done!
+                                         :char (char b))
+                                  (rf acc))))))
+                  (doall))
+             (decommit bb))
+           acc))))))
+
 (def request-rf
   (fn [rf]
     (let [once (volatile! false)]
@@ -194,13 +292,12 @@
                :as x}]
          (when-not @once
            (let [dst (reserve)
-                 #_src  #_(->> req
-                               (clojure.string/join)
-                               (.getBytes)
-                               (ByteBuffer/wrap))
+                 src  (->> req
+                           (clojure.string/join)
+                           (.getBytes)
+                           (ByteBuffer/wrap))
                  ]
              (.put dst src)
-             (.rewind src)
              (.flip dst)
              (commit dst)
              (write! selection-key)
@@ -253,8 +350,6 @@
                   (doall))
              (decommit bb))
            (rf acc)))))))
-
-*e
 
 (def channel-rf
   (fn [rf]
@@ -364,26 +459,131 @@
                                     :context/rf (xf (rf/result-fn))))))
        (rf acc x)))))
 
+(def selector-rf
+  (fn [rf]
+    (let [sl (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port]
+               :nio/keys [selector]
+               :as x}]
+         (when-not @sl
+           (let [selector (or selector (selector!))]
+             (->> selector
+                  (vreset! sl))))
+         (->> (assoc x :nio/selector ^Selector @sl)
+              (rf acc)))))))
+
+#_(def select-rf
+    (fn [rf]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:nio/keys [selector]
+               :context/keys [src]
+               :as x}]
+         (when (> (select! selector) 0)
+           (let [^Set keys-set (.selectedKeys selector)
+                 selected-keys (into #{} keys-set)]
+             (.clear keys-set)
+             (doseq [^SelectionKey sk selected-keys]
+               (let [{:context/keys [rf acc x]
+                      :as attachment} (.attachment sk)]
+                 (rf acc (assoc x
+                                :context/src src
+                                :nio/selection-key sk
+                                :nio/attachment attachment))))))
+         (rf acc)))))
+
 (def select-rf
   (fn [rf]
     (fn
       ([] (rf))
       ([acc] (rf acc))
       ([acc {:nio/keys [selector]
-             :context/keys [src]
+             :async/keys [stop]
              :as x}]
-       (when (> (select! selector) 0)
-         (let [^Set keys-set (.selectedKeys selector)
-               selected-keys (into #{} keys-set)]
-           (.clear keys-set)
-           (doseq [^SelectionKey sk selected-keys]
-             (let [{:context/keys [rf acc x]
-                    :as attachment} (.attachment sk)]
-               (rf acc (assoc x
-                              :context/src src
-                              :nio/selection-key sk
-                              :nio/attachment attachment))))))
-       (rf acc)))))
+       (if @stop
+         (rf acc x)
+         (do
+           (when (> (select! selector) 0)
+             (let [^Set keys-set (.selectedKeys selector)
+                   selected-keys (into #{} keys-set)]
+               (.clear keys-set)
+               (doseq [^SelectionKey sk selected-keys]
+                 (let [{:context/keys [rf acc x]
+                        :as attachment} (.attachment sk)]
+                   (rf acc (assoc x
+                                  :nio/selection-key sk
+                                  :nio/attachment attachment))))))
+           acc))))))
+
+(def close-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [selector]
+             :as x}]
+       (prn ::closing)
+       (doseq [sk (.keys selector)]
+         (some-> sk (.channel) (.close))
+         (.cancel sk))
+       (.close selector)
+       (rf acc x)))))
+
+(defn thread-rf [xf]
+  (fn [rf]
+    (let [thread (volatile! nil)
+          result (volatile! nil)
+          stop (volatile! false)
+          stop! (fn [^Selector selector]
+                  (prn ::stopping @thread)
+                  (vreset! stop true)
+                  (.wakeup selector))
+          steps (fn [rf acc x]
+                  (if-let [r (rf)]
+                    (vreset! result r)
+                    (do
+                      (rf acc x)
+                      (recur rf acc x)
+                      #_(when-not @stop
+                          (recur rf acc x)))))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:nio/keys [selector]
+               :as x}]
+         (when-not @thread
+           (->> (fj/thread
+                  (-> (xf (rf/result-fn))
+                      (steps acc (assoc x :async/stop stop))))
+                (vreset! thread)))
+         (rf acc (assoc x
+                        :async/stop! (partial stop! selector)
+                        :async/stop stop
+                        :async/result result
+                        :async/thread @thread)))))))
+
+#_(
+   (into []
+         (thread-rf
+          (comp
+           (let [vv (volatile! nil)]
+             (map (fn [{:keys [v] :as x}]
+                    (when-not @vv
+                      (vreset! vv v))
+                    (assoc x :v (vswap! vv inc)))))
+           (remove (fn [{:keys [v]}]
+                     (< v 10)))))
+         [{:v 0}])
+   (def t *1)
+   (-> t first :async/result deref)
+   (-> t first :async/stop! (apply []))
+   (-> t first :async/thread .getState)
+
+   )
 
 (def process-rf
   (comp
@@ -508,144 +708,6 @@
                :as attachment} (.attachment sk)]
           (rf acc (assoc x :nio/attachment attachment)))))))
 
-(defn -main [& args]
-  (let [selector (selector!)
-        port (Integer/parseInt (first args))
-        xf (comp
-            attachment-rf
-            (comp
-             (map (fn [{:http/keys [body status]
-                        :keys [headers method path minor major]
-                        :as x}]
-                    (->> (assoc x
-                                :http/body "OK"
-                                :http/status 200
-                                :http/reason "OK"
-                                :http/headers {:content-type "text/plain"
-                                               :connection "close"}))))
-             (map (fn [x] (assoc x :http/req [])))
-             (map (fn [{:http/keys [req headers host] :as x}]
-                    (assoc x :http/headers (conj {:Host host} headers))))
-             (map (fn [{:http/keys [req] :as x}]
-                    (update x :http/req conj "HTTP")))
-             (map (fn [{:http/keys [req] :as x}]
-                    (update x :http/req conj "/")))
-             (map (fn [{:http/keys [req major minor] :as x}]
-                    (update x :http/req conj (str major "." minor))))
-             (map (fn [{:http/keys [req] :as x}]
-                    (update x :http/req conj " ")))
-             (map (fn [{:http/keys [req major status reason] :as x}]
-                    (update x :http/req conj (str status " " reason))))
-             (map (fn [{:http/keys [req] :as x}]
-                    (update x :http/req conj "\r\n")))
-             (map (fn [{:http/keys [headers body] :as x}]
-                    (cond
-                      (not body)
-                      (update x :http/headers conj {:content-length 0})
-
-                      (string? body)
-                      (update x :http/headers conj {:content-length (count body)})
-
-                      (instance? java.nio.ByteBuffer body)
-                      (update x :http/headers conj {:content-length (.limit body)}))))
-             http/headers-rf
-             (map (fn [{:http/keys [req] :as x}]
-                    (update x :http/req conj "\r\n")))
-             (map (fn [{:http/keys [req body] :as x}]
-                    (if body
-                      (update x :http/req conj body)
-                      x)))
-             (map (fn [{:http/keys [req]
-                        :as x}]
-                    (->> (assoc x
-                                :context/src (->> req
-                                                  (clojure.string/join)
-                                                  (.getBytes)
-                                                  (ByteBuffer/wrap)))))))
-            bind-rf
-            (accept-rf (comp
-                        attachment-rf
-                        valid-rf
-                        read-rf
-                        write-rf
-                        response-rf
-                        #_header/request-line
-                        #_header/headers
-                        #_(comp
-                           (map (fn [{:http/keys [body status]
-                                      :keys [headers method path minor major]
-                                      :as x}]
-                                  (->> (assoc x
-                                              :http/body "OK"
-                                              :http/status 200
-                                              :http/reason "OK"
-                                              :http/headers {:content-type "text/plain"
-                                                             :connection "close"}))))
-                           (map (fn [x] (assoc x :http/req [])))
-                           (map (fn [{:http/keys [req headers host] :as x}]
-                                  (assoc x :http/headers (conj {:Host host} headers))))
-                           (map (fn [{:http/keys [req] :as x}]
-                                  (update x :http/req conj "HTTP")))
-                           (map (fn [{:http/keys [req] :as x}]
-                                  (update x :http/req conj "/")))
-                           (map (fn [{:http/keys [req major minor] :as x}]
-                                  (update x :http/req conj (str major "." minor))))
-                           (map (fn [{:http/keys [req] :as x}]
-                                  (update x :http/req conj " ")))
-                           (map (fn [{:http/keys [req major status reason] :as x}]
-                                  (update x :http/req conj (str status " " reason))))
-                           (map (fn [{:http/keys [req] :as x}]
-                                  (update x :http/req conj "\r\n")))
-                           (map (fn [{:http/keys [headers body] :as x}]
-                                  (cond
-                                    (not body)
-                                    (update x :http/headers conj {:content-length 0})
-
-                                    (string? body)
-                                    (update x :http/headers conj {:content-length (count body)})
-
-                                    (instance? java.nio.ByteBuffer body)
-                                    (update x :http/headers conj {:content-length (.limit body)}))))
-                           http/headers-rf
-                           (map (fn [{:http/keys [req] :as x}]
-                                  (update x :http/req conj "\r\n")))
-                           (map (fn [{:http/keys [req body] :as x}]
-                                  (if body
-                                    (update x :http/req conj body)
-                                    x))))
-                        request-rf
-                        (map (fn [{:nio/keys [^SelectionKey selection-key]}]
-                               #_(prn ::closing)
-                               (some-> selection-key (.channel) (.close))
-                               (.cancel selection-key)))))
-            select-rf)
-        rf (xf (rf/result-fn))
-        stop (volatile! false)
-        stop! (fn []
-                (prn ::stopping)
-                (vreset! stop true)
-                (doseq [sk (.keys selector)]
-                  (some-> sk (.channel) (.close))
-                  (.cancel sk))
-                (.close selector))
-        steps (fn [acc x]
-                (if-let [r (rf)]
-                  r
-                  (do
-                    (rf acc x)
-                    (when-not @stop
-                      #_(prn ::recur)
-                      (recur acc x)))))]
-    (steps nil
-           {:nio/selector selector
-            :context/bip-size (* 1 4096)
-            :http/host "localhost"
-            :http/scheme :http
-            :http/port port
-            :http/path "/"
-            :http/minor 1 :http/major 1
-            :http/method :GET})))
-
 #_(
    *e
    *ns*
@@ -664,6 +726,221 @@
         (map (fn [e] [(.getDisplayName e) (.getMTU e)])))
 
    ;; server
+   (let [xf (server-rf
+             (comp
+              attachment-rf
+              valid-rf
+              read-rf
+              write-rf
+              receive-rf
+              (rf/once-rf
+               (comp header/request-line
+                     header/headers
+                     (map (fn [{:keys [path] :as x}]
+                            (prn ::path path)
+                            x))
+                     (map (fn [{:http/keys [body status] :as x}]
+                            (->> (assoc x
+                                        :http/body "OK"
+                                        :http/status 200
+                                        :http/reason "OK"
+                                        :http/headers {:content-type "text/plain"
+                                                       :connection "keep-alive"}))))
+                     (comp
+                      (map (fn [x] (assoc x :http/req [])))
+                      (map (fn [{:http/keys [req headers host] :as x}]
+                             (assoc x :http/headers (conj {:Host host} headers))))
+                      (map (fn [{:http/keys [req] :as x}]
+                             (update x :http/req conj "HTTP")))
+                      (map (fn [{:http/keys [req] :as x}]
+                             (update x :http/req conj "/")))
+                      (map (fn [{:http/keys [req major minor] :as x}]
+                             (update x :http/req conj (str major "." minor))))
+                      (map (fn [{:http/keys [req] :as x}]
+                             (update x :http/req conj " ")))
+                      (map (fn [{:http/keys [req major status reason] :as x}]
+                             (update x :http/req conj (str status " " reason))))
+                      (map (fn [{:http/keys [req] :as x}]
+                             (update x :http/req conj "\r\n")))
+                      (map (fn [{:http/keys [headers body] :as x}]
+                             (cond
+                               (not body)
+                               (update x :http/headers conj {:content-length 0})
+
+                               (string? body)
+                               (update x :http/headers conj {:content-length (count body)})
+
+                               (instance? java.nio.ByteBuffer body)
+                               (update x :http/headers conj {:content-length (.limit body)}))))
+                      http/headers-rf
+                      (map (fn [{:http/keys [req] :as x}]
+                             (update x :http/req conj "\r\n")))
+                      (map (fn [{:http/keys [req body] :as x}]
+                             (if body
+                               (update x :http/req conj body)
+                               x))))
+                     send-rf))))]
+     (->> [{:context/bip-size (* 1 4096)
+            :http/host "localhost"
+            :http/scheme :http
+            :http/port 10014
+            :http/path "/"
+            :http/minor 1 :http/major 1
+            :http/method :GET}]
+          (into [] xf)))
+
+   (def x (first *1))
+
+   ;; repl server
+   (let [response-rf (comp
+                        (map (fn [x] (assoc x :http/req [])))
+                        (map (fn [{:http/keys [req headers host] :as x}]
+                               (assoc x :http/headers (conj {:Host host} headers))))
+                        (map (fn [{:http/keys [req] :as x}]
+                               (update x :http/req conj "HTTP")))
+                        (map (fn [{:http/keys [req] :as x}]
+                               (update x :http/req conj "/")))
+                        (map (fn [{:http/keys [req major minor] :as x}]
+                               (update x :http/req conj (str major "." minor))))
+                        (map (fn [{:http/keys [req] :as x}]
+                               (update x :http/req conj " ")))
+                        (map (fn [{:http/keys [req major status reason] :as x}]
+                               (update x :http/req conj (str status " " reason))))
+                        (map (fn [{:http/keys [req] :as x}]
+                               (update x :http/req conj "\r\n")))
+                        (map (fn [{:http/keys [headers body] :as x}]
+                               (cond
+                                 (not body)
+                                 (update x :http/headers conj {:content-length 0})
+
+                                 (string? body)
+                                 (update x :http/headers conj {:content-length (count body)})
+
+                                 (instance? java.nio.ByteBuffer body)
+                                 (update x :http/headers conj {:content-length (.limit body)}))))
+                        http/headers-rf
+                        (map (fn [{:http/keys [req] :as x}]
+                               (update x :http/req conj "\r\n")))
+                        (map (fn [{:http/keys [req body] :as x}]
+                               (if body
+                                 (update x :http/req conj body)
+                                 x))))
+         xf (comp
+             selector-rf
+             (thread-rf
+              (comp
+               attachment-rf
+               bind-rf
+               (accept-rf (comp
+                           attachment-rf
+                           valid-rf
+                           read-rf
+                           write-rf
+                           receive-rf
+                           (rf/once-rf
+                            (comp header/request-line
+                                  header/headers
+                                  (rf/choose-rf
+                                   :path
+                                   {"/repl" (comp
+                                             (drop 1)
+                                             params/body
+                                             (rf/branch (fn [{:keys [method]
+                                                              {:keys [content-type]} :headers
+                                                              {input :form session-id :device-id :keys [repl-token]} :params}]
+                                                          (and
+                                                           (= content-type "application/x-www-form-urlencoded")
+                                                           (= method :POST)
+                                                           (= repl-token (or #_(:JAQ-REPL-TOKEN env) "foobarbaz"))))
+                                                        (comp
+                                                         (map (fn [{{input :form session-id :device-id :keys [repl-token]} :params
+                                                                    :keys [headers] :as x}]
+                                                                (->> {:input input :session-id session-id}
+                                                                     (jaq.repl/session-repl)
+                                                                     ((fn [{:keys [val ns ms]}]
+                                                                        (assoc x
+                                                                               :http/status 200
+                                                                               :http/reason "OK"
+                                                                               :http/headers {:content-type "text/plain"
+                                                                                              :connection "keep-alive"}
+                                                                               :http/body (str ns " => " val " - " ms "ms" "\n"))))))))
+                                                        (comp
+                                                         (map (fn [{:keys [uuid] :as x}]
+                                                                (assoc x
+                                                                       :http/status 403
+                                                                       :http/reason "FORBIDDEN"
+                                                                       :http/headers {:content-type "text/plain"
+                                                                                      :connection "keep-alive"}
+                                                                       :http/body "Forbidden"))))))
+                                    "/" (map (fn [{:app/keys [uuid]
+                                                   {:keys [x-appengine-city
+                                                           x-appengine-country
+                                                           x-appengine-region
+                                                           x-appengine-user-ip
+                                                           x-cloud-trace-context]} :headers
+                                                   :as x}]
+                                               (assoc x
+                                                      :http/status 200
+                                                      :http/reason "OK"
+                                                      :http/headers {:content-type "text/plain"
+                                                                     :connection "keep-alive"}
+                                                      :http/body (str "You are from " x-appengine-city " in "
+                                                                      x-appengine-region " / " x-appengine-country "."
+                                                                      " Your IP is " x-appengine-user-ip " and your trace is "
+                                                                      x-cloud-trace-context "."))))
+                                    :default (map (fn [{:app/keys [uuid]
+                                                        {:keys [host]} :headers
+                                                        :as x}]
+                                                    (assoc x
+                                                           :http/status 404
+                                                           :http/reason "NOT FOUND"
+                                                           :http/headers {:content-type "text/plain"
+                                                                          :connection "close"}
+                                                           :http/body "NOT FOUND")))})
+                                  response-rf
+                                  send-rf
+                                  (map (fn [{:nio/keys [selection-key selector attachment] :as x}]
+                                         (readable selector (.channel selection-key) attachment)
+                                         #_(.cancel selection-key)
+                                         x))))))
+               select-rf
+               close-rf)))]
+     (->> [{:context/bip-size (* 1 4096)
+            :http/host "localhost"
+            :http/scheme :http
+            :http/port 10010
+            :http/minor 1 :http/major 1}]
+          (into [] xf)))
+
+   (def x (first *1))
+   *e
+   *ns*
+
+   (in-ns 'jaq.http.xrf.nio)
+
+   (def x (first *1))
+
+   (-> x :nio/selector (.keys)
+       (last) #_((fn [sk]
+                   (let [{{{:keys [reserve commit block decommit]} :context/bip} :nio/out
+                          :as attachment} (.attachment sk)
+                         ^SocketChannel channel (.channel sk)]
+                     (block)))))
+
+   (-> x :async/stop! (apply []))
+   (-> x :async/result (deref))
+   *e
+   (require 'clojure.reflect)
+   (-> x (first) :async/thread (.getStackTrace) #_StackTraceElement->vec (alength))
+   (->> x (first) :async/thread (.getStackTrace) clojure.reflect/reflect)
+   (-> x #_(first) :nio/selector (.isOpen))
+
+   (let [selector (-> x #_(first) :nio/selector)]
+     (doseq [sk (.keys selector)]
+       (some-> sk (.channel) (.close))
+       (.cancel sk))
+     (.close selector))
+
    (let [selector (selector!)
          xf (comp
              attachment-rf
@@ -673,51 +950,54 @@
                          valid-rf
                          read-rf
                          write-rf
-                         response-rf
-                         header/request-line
-                         header/headers
-                         (map (fn [{:http/keys [body status] :as x}]
-                                (->> (assoc x
-                                            :http/body "OK"
-                                            :http/status 200
-                                            :http/reason "OK"
-                                            :http/headers {:content-type "text/plain"
-                                                           :connection "keep-alive"}))))
-                         (comp
-                          (map (fn [x] (assoc x :http/req [])))
-                          (map (fn [{:http/keys [req headers host] :as x}]
-                                 (assoc x :http/headers (conj {:Host host} headers))))
-                          (map (fn [{:http/keys [req] :as x}]
-                                 (update x :http/req conj "HTTP")))
-                          (map (fn [{:http/keys [req] :as x}]
-                                 (update x :http/req conj "/")))
-                          (map (fn [{:http/keys [req major minor] :as x}]
-                                 (update x :http/req conj (str major "." minor))))
-                          (map (fn [{:http/keys [req] :as x}]
-                                 (update x :http/req conj " ")))
-                          (map (fn [{:http/keys [req major status reason] :as x}]
-                                 (update x :http/req conj (str status " " reason))))
-                          (map (fn [{:http/keys [req] :as x}]
-                                 (update x :http/req conj "\r\n")))
-                          (map (fn [{:http/keys [headers body] :as x}]
-                                 (cond
-                                   (not body)
-                                   (update x :http/headers conj {:content-length 0})
+                         receive-rf
+                         (rf/once-rf
+                          (comp header/request-line
+                                header/headers
+                                (map (fn [{:keys [path] :as x}]
+                                       (prn ::path path)
+                                       x))
+                                (map (fn [{:http/keys [body status] :as x}]
+                                       (->> (assoc x
+                                                   :http/body "OK"
+                                                   :http/status 200
+                                                   :http/reason "OK"
+                                                   :http/headers {:content-type "text/plain"
+                                                                  :connection "keep-alive"}))))
+                                (comp
+                                 (map (fn [x] (assoc x :http/req [])))
+                                 (map (fn [{:http/keys [req headers host] :as x}]
+                                        (assoc x :http/headers (conj {:Host host} headers))))
+                                 (map (fn [{:http/keys [req] :as x}]
+                                        (update x :http/req conj "HTTP")))
+                                 (map (fn [{:http/keys [req] :as x}]
+                                        (update x :http/req conj "/")))
+                                 (map (fn [{:http/keys [req major minor] :as x}]
+                                        (update x :http/req conj (str major "." minor))))
+                                 (map (fn [{:http/keys [req] :as x}]
+                                        (update x :http/req conj " ")))
+                                 (map (fn [{:http/keys [req major status reason] :as x}]
+                                        (update x :http/req conj (str status " " reason))))
+                                 (map (fn [{:http/keys [req] :as x}]
+                                        (update x :http/req conj "\r\n")))
+                                 (map (fn [{:http/keys [headers body] :as x}]
+                                        (cond
+                                          (not body)
+                                          (update x :http/headers conj {:content-length 0})
 
-                                   (string? body)
-                                   (update x :http/headers conj {:content-length (count body)})
+                                          (string? body)
+                                          (update x :http/headers conj {:content-length (count body)})
 
-                                   (instance? java.nio.ByteBuffer body)
-                                   (update x :http/headers conj {:content-length (.limit body)}))))
-                          http/headers-rf
-                          (map (fn [{:http/keys [req] :as x}]
-                                 (update x :http/req conj "\r\n")))
-                          (map (fn [{:http/keys [req body] :as x}]
-                                 (if body
-                                   (update x :http/req conj body)
-                                   x))))
-                         #_http/http-rf
-                         request-rf))
+                                          (instance? java.nio.ByteBuffer body)
+                                          (update x :http/headers conj {:content-length (.limit body)}))))
+                                 http/headers-rf
+                                 (map (fn [{:http/keys [req] :as x}]
+                                        (update x :http/req conj "\r\n")))
+                                 (map (fn [{:http/keys [req body] :as x}]
+                                        (if body
+                                          (update x :http/req conj body)
+                                          x))))
+                                send-rf))))
              select-rf)
          rf (xf (rf/result-fn))
          stop (volatile! false)
@@ -734,7 +1014,7 @@
                    (do
                      (rf acc x)
                      (when-not @stop
-                       (prn ::recur)
+                       #_(prn ::recur)
                        (recur acc x)))))]
      (fj/thread
        (steps nil
@@ -742,7 +1022,7 @@
                :context/bip-size (* 1 4096)
                :http/host "localhost"
                :http/scheme :http
-               :http/port 10100
+               :http/port 10010
                :http/path "/"
                :http/minor 1 :http/major 1
                :http/method :GET}))
@@ -752,6 +1032,15 @@
    x
    *e
    *ns*
+
+   (def t
+     (fj/thread (fn []
+                  (prn (Thread/activeCount))
+                  :foo)))
+   (-> t .getStackTrace)
+   (-> t .getState)
+   (Thread/activeCount)
+   (-> (Thread/getAllStackTraces) keys count)
 
    ;; http
    (let [selector (selector!)
@@ -1050,12 +1339,12 @@
            :context/bip-size (* 5 4096)
            :storage/bucket "staging.alpeware-foo-bar.appspot.com"
            ;;:storage/prefix "target/classes/jaq/async"
-           :storage/prefix "app/v2"
+           :storage/prefix "app/v3"
            :appengine/id (str (System/currentTimeMillis))
            :appengine/app "alpeware-foo-bar"
            :appengine/service :default
            :http/params {;;:prefix "target/classes/jaq/async"
-                         :prefix "app/v2"
+                         :prefix "app/v3"
                          :bucket "staging.alpeware-foo-bar.appspot.com"}
            :http/host storage/root
            :http/scheme :https
