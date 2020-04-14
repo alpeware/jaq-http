@@ -44,27 +44,23 @@
       ([acc x]
        (rf acc x)))))
 
-;; TODO: change to repeatedly
-(defn once-rf [xf]
+(defn once-rf [f]
   (fn [rf]
-    (let [val (volatile! nil)
-          vacc (volatile! nil)
-          init (fn [] (xf (result-fn)))
-          xf-rf (volatile! (init))]
+    (let [once (volatile! false)]
       (fn
         ([] (rf))
         ([acc] (rf acc))
         ([acc x]
-         (let []
-           #_(prn x)
-           #_(->> x (map (fn [e] (@xf-rf nil e))) (doall))
-           (@xf-rf nil x)
-           (if-let [x' (@xf-rf)]
-             (do
-               #_(prn ::reset xf)
-               (vreset! xf-rf (init))
-               (rf acc x'))
-             acc)))))))
+         (if @once
+           (rf acc x)
+           (do
+             (vreset! once true)
+             (->> (f x)
+                  (rf acc)))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.rf)
+   )
 
 (defn repeatedly-rf [xf]
   (fn [rf]
@@ -86,6 +82,31 @@
                (vreset! xf-rf (init))
                (rf acc x'))
              acc)))))))
+
+(defn one-rf [k xf]
+  (fn [rf]
+    (let [once (volatile! false)
+          val (volatile! nil)
+          xrf (xf (result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (if @once
+           (rf acc (assoc x k @val))
+           (do
+             (xrf acc x)
+             (if-let [x' (xrf)]
+               (do
+                 #_(prn k x')
+                 (vreset! val x')
+                 (vreset! once true)
+                 (rf acc (assoc x k x')))
+               acc))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.rf)
+   )
 
 (defn choose-rf [pred xfs]
   (fn [rf]
@@ -111,6 +132,18 @@
    *ns*
 
    )
+
+(defn debug-rf [tag]
+  (fn [rf]
+    (let [once (volatile! false)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (when-not @once
+           (prn tag x)
+           (vreset! once true))
+         (rf acc x))))))
 
 #_(
    (in-ns 'jaq.http.xrf.rf)

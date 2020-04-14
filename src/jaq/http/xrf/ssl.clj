@@ -50,8 +50,7 @@
    (handshake! engine x (.getHandshakeStatus engine)))
   ([^SSLEngine engine x ^SSLEngineResult$HandshakeStatus handshake-status]
    (let [{{{{:keys [reserve commit] :as bip} :context/bip} :nio/out} :nio/attachment
-          {{{:keys [block decommit] :as bip} :context/bip} :nio/in} :nio/attachment
-          :ssl/keys [^ByteBuffer encoded ^ByteBuffer decoded ^ByteBuffer scratch]} x
+          {{{:keys [block decommit] :as bip} :context/bip} :nio/in} :nio/attachment} x
          hs (handshake? engine)
          ;;_ (prn ::hs hs)
          step (condp = hs
@@ -64,13 +63,6 @@
                   (prn ::executing ::task)
                   (-> (.getDelegatedTask engine)
                       ^Runnable (.run))
-                  #_(try
-                    (-> (.getDelegatedTask engine)
-                        ^Runnable (.run))
-                    (catch Throwable e
-                      (prn ::task e))
-                    (catch Exception e
-                      (prn ::task e)))
                   (handshake? engine))
 
                 ;; write data to network
@@ -95,7 +87,6 @@
                     (do
                       (.flip dst)
                       (commit dst)
-                      #_(prn ::scratch dst)
                       #_(.interestOps sk SelectionKey/OP_WRITE)
                       (handshake? engine))))
 
@@ -169,25 +160,6 @@
     (.setSSLParameters engine params)
     engine))
 
-#_(defn ssl-rf [host]
-    (let [^SSLEngine engine (-> (context) (engine) (client-mode) (configure host))
-          packet-buffer-size (-> engine (.getSession) (.getPacketBufferSize))
-          out (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
-          encoded (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
-          decoded (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))
-          scratch (-> (ByteBuffer/allocateDirect packet-buffer-size) (.clear))]
-      (.beginHandshake engine)
-      (.wrap engine encoded out)
-      (.flip out)
-      #_{:request request
-         :encoded encoded
-         :decoded decoded
-         :scratch scratch
-         :in (ConcurrentLinkedDeque.)
-         :out (ConcurrentLinkedDeque. [out])
-         :engine engine
-         :scheme scheme}))
-
 ;; assumes request requires SSL - check scheme upstream
 (def ssl-rf
   (fn [rf]
@@ -236,7 +208,7 @@
            (if-not (contains? #{:finished :not-handshaking} hs)
              (do
                (handshake! engine x)
-               (rf acc))
+               acc)
              (do
                (when-not @status
                  (prn ::handshake hs)
@@ -279,7 +251,7 @@
            (->> (assoc x :context/clear! clear!)
                 (rf acc))))))))
 
-(def request-ssl-rf
+#_(def request-ssl-rf
   (fn [rf]
     (let [once (volatile! false)
           request (volatile! nil)
@@ -332,6 +304,65 @@
                  (recur acc x))))
            (->> (assoc x :context/clear! clear!)
                 (rf acc))))))))
+
+(defn request-ssl-rf [xf]
+  (fn [rf]
+    (let [once (volatile! false)
+          request (volatile! nil)
+          requests (volatile! nil)
+          xrf (xf (rf/result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               :ssl/keys [^SSLEngine engine]
+               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               :as x}]
+         (if @once
+           (rf acc x)
+           (do
+             (when-not @requests
+               (xrf acc x)
+               (when-let [{:http/keys [req] :as xr} (xrf)]
+                 (->> req
+                      (map (fn [e]
+                             (cond
+                               (string? e)
+                               (-> (.getBytes e)
+                                   (ByteBuffer/wrap))
+
+                               (instance? ByteBuffer e)
+                               e)))
+                      (vreset! requests))))
+             (when (and @request (not (.hasRemaining @request)))
+               (vreset! request nil))
+             (when (and (seq @requests) (not @request))
+               (->> @requests
+                    (first)
+                    (vreset! request))
+               (vswap! requests rest))
+             (if (and @request (.hasRemaining @request))
+               (let [dst (reserve)
+                     result (-> engine
+                                (.wrap @request dst)
+                                (result?))]
+                 (condp = result
+                   :closed
+                   (throw (IllegalStateException. "Connection closed"))
+
+                   ;; wait for socket out to clear
+                   :buffer-overflow
+                   (do
+                     #_(prn result dst @request)
+                     (rf acc))
+
+                   :ok
+                   (do
+                     (.flip dst)
+                     (commit dst)
+                     (recur acc x))))
+               (->> x
+                    (rf acc))))))))))
 
 #_(
    (in-ns 'jaq.http.xrf.ssl)
@@ -390,7 +421,7 @@
                (do
                  #_(prn ::buffer-underflow ::compacting bb buf-b scratch)
                  (if-not (and (.hasRemaining bb) (> (.limit buf-b) 0))
-                   (rf acc)
+                   acc
                    ;; compact & merge region a and b of bip
                    (do
                      (prn ::buffer-underflow ::compacting bb buf-b scratch)
@@ -407,7 +438,7 @@
 
                :buffer-overflow
                (prn ::buffer-overflow bb scratch)
-               (rf acc)
+               acc
 
                :ok
                (do
@@ -437,17 +468,88 @@
                         (doall))
                    #_(prn ::response bb scratch (block) (.hasRemaining bb)))
                  (if-not (.hasRemaining bb)
-                   (rf acc)
+                   acc
                    (do
                      #_(prn ::recur bb)
                      (recur acc x))))))))))))
 
-#_(
-   (let [[a b] [:foo :bar]]
-     a)
+(defn receive-ssl-rf [xf]
+  (fn [rf]
+    (let [once (volatile! false)
+          result (volatile! nil)
+          xrf (xf (rf/result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               :ssl/keys [^SSLEngine engine]
+               :nio/keys [^SelectionKey selection-key]
+               {{{:keys [block decommit commit buf-b] :as bip-in} :context/bip} :nio/in} :nio/attachment
+               {{{:keys [reserve] :as bip-out} :context/bip} :nio/out} :nio/attachment
+               :as x}]
+         (if @once
+           (->> x
+                (rf acc))
+           (let [^ByteBuffer bb (block)
+                 ^ByteBuffer scratch (reserve)
+                 result (if (.hasRemaining bb)
+                            (try
+                              (-> ^SSLEngine engine
+                                  (.unwrap bb scratch)
+                                  (result?))
+                              (catch SSLException e
+                                (prn e)
+                                :buffer-underflow))
+                            :buffer-underflow)]
+             (condp = result
+               :closed
+               (throw (IllegalStateException. "Connection closed"))
 
-   (- 18472 7217)
-   )
+               :buffer-underflow
+               (do
+                 (if-not (and (.hasRemaining bb) (> (.limit buf-b) 0))
+                   acc
+                   ;; compact & merge region a and b of bip
+                   (do
+                     (prn ::buffer-underflow ::compacting bb buf-b scratch)
+                     (.put scratch bb)
+                     (decommit bb)
+                     (let [^ByteBuffer bb2 (block)]
+                       (.put scratch bb2)
+                       (decommit bb2)
+                       (.flip scratch)
+                       (let [^ByteBuffer bb3 ((:reserve bip-in))]
+                         (.put bb3 scratch)
+                         (.flip bb3)
+                         (commit bb3))))))
+
+               :buffer-overflow
+               (prn ::buffer-overflow bb scratch)
+               acc
+
+               :ok
+               (do
+                 (decommit bb)
+                 (.flip scratch)
+                 (when (.hasRemaining scratch)
+                   (->> scratch
+                        (.limit)
+                        (range)
+                        (map (fn [_]
+                               (let [b (-> scratch (.get))]
+                                 (xrf acc (assoc x :byte b)))))
+                        (doall)))
+                 (cond
+                   (xrf)
+                   (do
+                     (vreset! once true)
+                     (rf acc (xrf)))
+
+                   (not (.hasRemaining bb))
+                   acc
+
+                   :else
+                   (recur acc x)))))))))))
 
 #_(
    *ns*

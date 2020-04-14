@@ -31,7 +31,7 @@
 (defn -main [& args]
   (register!)
   (def s
-    (->> [{:context/bip-size (* 1 4096)
+    #_(->> [{:context/bip-size (* 1 4096)
            :http/port (or
                        (some-> env :PORT (Integer/parseInt))
                        3000)
@@ -39,7 +39,7 @@
            :http/scheme :http
            :http/minor 1 :http/major 1}]
          (into [] repl-xf)))
-  #_(->> (or
+  (->> (or
         (some-> env :PORT (Integer/parseInt))
         3000)
        (serve app/repl)))

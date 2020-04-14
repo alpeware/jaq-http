@@ -13,6 +13,7 @@
  {:b {:extra-paths ["scripts"], :main-opts ["-m" "build"]},
   :u {:extra-paths ["scripts"], :main-opts ["-m" "upload"]},
   :m {:main-opts ["-m" "jaq.http.server"]},
+  :s {:main-opts ["-m" "jaq.http.xrf.nio"]},
   :p
   {:extra-paths ["profiles"],
    :main-opts ["-m" "jaq.http.server"],

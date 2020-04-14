@@ -65,71 +65,86 @@
    nio/valid-rf
    nio/read-rf
    nio/write-rf
-   nio/receive-rf
-   (rf/once-rf
+   (rf/repeatedly-rf
     (comp
-     header/request-line
-     header/headers
-     (rf/choose-rf
-      :path
-      {"/repl" (comp
-                (drop 1)
-                params/body
-                (rf/branch (fn [{:keys [method]
-                                 {:keys [content-type]} :headers
-                                 {input :form session-id :device-id :keys [repl-token]} :params}]
-                             (and
-                              (= content-type "application/x-www-form-urlencoded")
-                              (= method :POST)
-                              (= repl-token (or #_(:JAQ-REPL-TOKEN env) "foobarbaz"))))
-                           (comp
-                            (map (fn [{{input :form session-id :device-id :keys [repl-token]} :params
-                                       :keys [headers] :as x}]
-                                   (->> {:input input :session-id session-id}
-                                        (jaq.repl/session-repl)
-                                        ((fn [{:keys [val ns ms]}]
-                                           (assoc x
-                                                  :http/status 200
-                                                  :http/reason "OK"
-                                                  :http/headers {:content-type "text/plain"
-                                                                 :connection "keep-alive"}
-                                                  :http/body (str ns " => " val " - " ms "ms" "\n"))))))))
-                           (comp
-                            (map (fn [{:keys [uuid] :as x}]
-                                   (assoc x
-                                          :http/status 403
-                                          :http/reason "FORBIDDEN"
-                                          :http/headers {:content-type "text/plain"
-                                                         :connection "keep-alive"}
-                                          :http/body "Forbidden"))))))
-       "/" (map (fn [{:app/keys [uuid]
-                      {:keys [x-appengine-city
-                              x-appengine-country
-                              x-appengine-region
-                              x-appengine-user-ip
-                              x-cloud-trace-context]} :headers
-                      :as x}]
-                  (assoc x
-                         :http/status 200
-                         :http/reason "OK"
-                         :http/headers {:content-type "text/plain"
-                                        :connection "keep-alive"}
-                         :http/body (str "You are from " x-appengine-city " in "
-                                         x-appengine-region " / " x-appengine-country "."
-                                         " Your IP is " x-appengine-user-ip " and your trace is "
-                                         x-cloud-trace-context "."))))
-       :default (map (fn [{:app/keys [uuid]
-                           {:keys [host]} :headers
-                           :as x}]
-                       (assoc x
-                              :http/status 404
-                              :http/reason "NOT FOUND"
-                              :http/headers {:content-type "text/plain"
-                                             :connection "close"}
-                              :http/body "NOT FOUND")))})
+     (nio/receive-rf
+      (comp
+       (rf/one-rf
+        :http/request
+        (comp
+         (map (fn [{:keys [byte] :as x}]
+                (assoc x :char (char byte))))
+         header/request-line
+         header/headers))
+       (map (fn [{{:keys [headers status path method]} :http/request
+                  :as x}]
+              (assoc x
+                     :method method
+                     :path path
+                     :headers headers
+                     :status status)))
+       (rf/choose-rf
+        :path
+        {"/repl" (comp
+                  (map (fn [{:keys [byte] :as x}]
+                         (assoc x :char (char byte))))
+                  (drop 1)
+                  params/body
+                  (rf/branch (fn [{:keys [method]
+                                   {:keys [content-type]} :headers
+                                   {input :form session-id :device-id :keys [repl-token]} :params}]
+                               (and
+                                (= content-type "application/x-www-form-urlencoded")
+                                (= method :POST)
+                                (= repl-token (or #_(:JAQ-REPL-TOKEN env) "foobarbaz"))))
+                             (comp
+                              (map (fn [{{input :form session-id :device-id :keys [repl-token]} :params
+                                         :keys [headers] :as x}]
+                                     (->> {:input input :session-id session-id}
+                                          (jaq.repl/session-repl)
+                                          ((fn [{:keys [val ns ms]}]
+                                             (assoc x
+                                                    :http/status 200
+                                                    :http/reason "OK"
+                                                    :http/headers {:content-type "text/plain"
+                                                                   :connection "keep-alive"}
+                                                    :http/body (str ns " => " val " - " ms "ms" "\n"))))))))
+                             (comp
+                              (map (fn [{:keys [uuid] :as x}]
+                                     (assoc x
+                                            :http/status 403
+                                            :http/reason "FORBIDDEN"
+                                            :http/headers {:content-type "text/plain"
+                                                           :connection "keep-alive"}
+                                            :http/body "Forbidden"))))))
+         "/" (map (fn [{:app/keys [uuid]
+                        {:keys [x-appengine-city
+                                x-appengine-country
+                                x-appengine-region
+                                x-appengine-user-ip
+                                x-cloud-trace-context]} :headers
+                        :as x}]
+                    (assoc x
+                           :http/status 200
+                           :http/reason "OK"
+                           :http/headers {:content-type "text/plain"
+                                          :connection "keep-alive"}
+                           :http/body (str "You are from " x-appengine-city " in "
+                                           x-appengine-region " / " x-appengine-country "."
+                                           " Your IP is " x-appengine-user-ip " and your trace is "
+                                           x-cloud-trace-context "."))))
+         :default (map (fn [{:app/keys [uuid]
+                             {:keys [host]} :headers
+                             :as x}]
+                         (assoc x
+                                :http/status 404
+                                :http/reason "NOT FOUND"
+                                :http/headers {:content-type "text/plain"
+                                               :connection "keep-alive"}
+                                :http/body "NOT FOUND")))})))
      response-rf
      nio/send-rf
-     (map (fn [{:nio/keys [selection-key] :as x}]
+     (map (fn [{:nio/keys [^SelectionKey selection-key] :as x}]
             (nio/readable! selection-key)
             x))))))
 
