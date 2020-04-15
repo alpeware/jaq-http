@@ -441,6 +441,7 @@
        walk/keywordize-keys
        :location)))
 
+;; TODO: get rid of having to manage state outside transducer
 (def upload-rf
   (fn [rf]
     (let [wait (volatile! false)
@@ -469,7 +470,7 @@
                  offset (->> b (.remaining) (dec) (+ index))
                  content-range (str "bytes " index "-" offset "/" size)]
              (.position buf (inc offset))
-             (prn ::storage content-range (.hasRemaining b) (.hasRemaining buf) b buf)
+             #_(prn ::storage content-range (.hasRemaining b) (.hasRemaining buf) b buf)
              (if (.hasRemaining b)
                (->> (assoc (dissoc x :http/params)
                            :context/wait! wait!
@@ -489,7 +490,6 @@
                     (rf acc))))))))))
 
 #_(
-
    (in-ns 'jaq.gcp.storage)
    *e
    (into [] (comp

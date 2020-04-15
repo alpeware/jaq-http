@@ -49,8 +49,8 @@
   ([^SSLEngine engine x]
    (handshake! engine x (.getHandshakeStatus engine)))
   ([^SSLEngine engine x ^SSLEngineResult$HandshakeStatus handshake-status]
-   (let [{{{{:keys [reserve commit] :as bip} :context/bip} :nio/out} :nio/attachment
-          {{{:keys [block decommit] :as bip} :context/bip} :nio/in} :nio/attachment} x
+   (let [{{:keys [reserve commit]} :nio/out
+          {:keys [block decommit]} :nio/in} x
          hs (handshake? engine)
          ;;_ (prn ::hs hs)
          step (condp = hs
@@ -168,14 +168,14 @@
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:http/keys [host]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               {:keys [reserve commit block decommit] :as bip} :nio/out
                :as x}]
          (when-not @engine
            (-> (context) (ssl-engine) (client-mode) (configure host)
                (->> (vreset! engine)))
            (let [dst (reserve)]
              (.beginHandshake @engine)
-             #_(prn ::handshake dst )
+             #_(prn ::handshake host dst )
              (-> @engine (.wrap empty-buffer dst) #_(result?))
              (.flip dst)
              (commit dst)))
@@ -187,10 +187,11 @@
 
    (let [dst (ByteBuffer/allocate 24024)]
      (-> (context) (ssl-engine) (client-mode) (configure "jaq.alpeware.com")
-         (.getSession) #_(.getPacketBufferSize) (.getApplicationBufferSize)
-         #_(doto (.beginHandshake))
-         #_(.wrap empty-buffer dst)
-         #_(result?)))
+         ;;(.getSession) #_(.getPacketBufferSize) (.getApplicationBufferSize)
+         (doto (.beginHandshake))
+         (.wrap empty-buffer dst)
+         #_(result?))
+     (.flip dst))
 
    )
 (def handshake-rf
@@ -213,97 +214,7 @@
                (when-not @status
                  (prn ::handshake hs)
                  (vreset! status hs))
-               #_(.interestOps selection-key SelectionKey/OP_READ)
                (rf acc x)))))))))
-
-#_(def request-ssl-rf
-  (fn [rf]
-    (let [once (volatile! false)
-          request (volatile! nil)
-          clear! (fn [] (vreset! request nil))]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:http/keys [req]
-               :ssl/keys [^SSLEngine engine]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
-               :as x}]
-         (when-not @request
-           (->> req
-                (clojure.string/join)
-                (.getBytes)
-                (ByteBuffer/wrap)
-                (vreset! request)))
-         (if (.hasRemaining @request)
-           (let [dst (reserve)
-                 result (-> engine
-                            (.wrap @request dst)
-                            (result?))]
-             (condp = result
-               :closed
-               (throw (IllegalStateException. "Connection closed"))
-
-               :ok
-               (do
-                 (.flip dst)
-                 (commit dst)))
-             (rf acc))
-           (->> (assoc x :context/clear! clear!)
-                (rf acc))))))))
-
-#_(def request-ssl-rf
-  (fn [rf]
-    (let [once (volatile! false)
-          request (volatile! nil)
-          requests (volatile! nil)
-          clear! (fn [] (vreset! requests nil))]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:http/keys [req]
-               :ssl/keys [^SSLEngine engine]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
-               :as x}]
-         (when-not @requests
-           (->> req
-                (map (fn [e]
-                       (cond
-                         (string? e)
-                         (-> (.getBytes e)
-                             (ByteBuffer/wrap))
-
-                         (instance? ByteBuffer e)
-                         e)))
-                (vreset! requests)))
-         (when (and @request (not (.hasRemaining @request)))
-           (vreset! request nil))
-         (when (and (seq @requests) (not @request))
-           (->> @requests
-                (first)
-                (vreset! request))
-           (vswap! requests rest))
-         (if (and @request (.hasRemaining @request))
-           (let [dst (reserve)
-                 result (-> engine
-                            (.wrap @request dst)
-                            (result?))]
-             (condp = result
-               :closed
-               (throw (IllegalStateException. "Connection closed"))
-
-               ;; wait for socket out to clear
-               :buffer-overflow
-               (do
-                 #_(prn result dst @request)
-                 (rf acc))
-
-               :ok
-               (do
-                 (.flip dst)
-                 (commit dst)
-                 (recur acc x))))
-           (->> (assoc x :context/clear! clear!)
-                (rf acc))))))))
 
 (defn request-ssl-rf [xf]
   (fn [rf]
@@ -316,7 +227,7 @@
         ([acc] (rf acc))
         ([acc {:http/keys [req]
                :ssl/keys [^SSLEngine engine]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               {:keys [reserve commit block decommit] :as bip} :nio/out
                :as x}]
          (if @once
            (rf acc x)
@@ -393,8 +304,8 @@
         ([acc {:http/keys [req]
                :ssl/keys [^SSLEngine engine]
                :nio/keys [^SelectionKey selection-key]
-               {{{:keys [block decommit commit buf-b] :as bip-in} :context/bip} :nio/in} :nio/attachment
-               {{{:keys [reserve] :as bip-out} :context/bip} :nio/out} :nio/attachment
+               {:keys [block decommit commit buf-b] :as bip-in} :nio/in
+               {{:keys [reserve] :as bip-out} :context/bip} :nio/out
                :as x}]
          (if @done
            (->> (assoc x :context/done! done!)
@@ -484,8 +395,8 @@
         ([acc {:http/keys [req]
                :ssl/keys [^SSLEngine engine]
                :nio/keys [^SelectionKey selection-key]
-               {{{:keys [block decommit commit buf-b] :as bip-in} :context/bip} :nio/in} :nio/attachment
-               {{{:keys [reserve] :as bip-out} :context/bip} :nio/out} :nio/attachment
+               {:keys [block decommit commit buf-b] :as bip-in} :nio/in
+               {:keys [reserve] :as bip-out} :nio/out
                :as x}]
          (if @once
            (->> x

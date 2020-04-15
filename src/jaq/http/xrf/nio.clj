@@ -105,22 +105,11 @@
        (set)
        (map (fn [^Selector e] (.wakeup e)))))
 
-#_(defn ^SocketChannel client-channel! [^ServerSocketChannel ssc]
-    (.accept ssc)
-    #_(some-> (.accept ssc)
-              (non-blocking)))
-
 (defn accept! [^ServerSocketChannel server-channel]
-  (.accept server-channel)
-  #_(some->> server-channel
-             (.accept)
-             (client-channel)
-             (readable selector)))
+  (.accept server-channel))
 
 (defn connect! [^SelectionKey sk]
-  ;; TODO: handle exceptions?
-  (-> sk ^SocketChannel (.channel) (.finishConnect))
-  #_(.interestOps sk SelectionKey/OP_WRITE))
+  (-> sk ^SocketChannel (.channel) (.finishConnect)))
 
 (defn write-channel [^SocketChannel channel ^ByteBuffer bytes]
   (.write channel bytes))
@@ -128,11 +117,10 @@
 (defn read-channel [^SocketChannel channel ^ByteBuffer buf]
   (.read channel buf))
 
-(defn read! [^SelectionKey sk]
-  (let [{;;:nio/keys [^ConcurrentLinkedDeque in]
-         {{:keys [reserve commit block decommit]} :context/bip} :nio/in
-         :as attachment} (.attachment sk)
-        ^SocketChannel channel (.channel sk)]
+(defn read! [{{:keys [reserve commit block decommit]} :nio/in
+              :nio/keys [^SelectionKey selection-key]
+              :as x}]
+  (let [^SocketChannel channel (.channel selection-key)]
     (let [bb (reserve)
           n (->> bb
                  (read-channel channel))]
@@ -140,30 +128,26 @@
         (< n 0) ;; end of stream
         (do
           (prn ::eos)
-          (.interestOps sk 0)
-          (.cancel sk))
+          (.interestOps selection-key 0)
+          (.cancel selection-key))
 
         (> n 0) ;; read some bytes
         (do
-          #_(prn ::read n)
+          (prn ::read n)
           (->> bb
                (.flip)
-               (commit))
-          sk))
+               (commit))))
       n)))
 
-(defn write! [^SelectionKey sk]
-  (let [{;;:nio/keys [^ConcurrentLinkedDeque out]
-         {{:keys [reserve commit block decommit]} :context/bip} :nio/out
-         :as attachment} (.attachment sk)
-        ^SocketChannel channel (.channel sk)]
+(defn write! [{{:keys [reserve commit block decommit]} :nio/out
+               :nio/keys [^SelectionKey selection-key]
+               :as x}]
+  (let [^SocketChannel channel (.channel selection-key)]
     (let [bb (block)]
-      #_(prn ::bb bb)
       (when (.hasRemaining bb)
         (write-channel channel bb)
         #_(prn ::wrote (.position bb))
         (decommit bb))
-      #_sk
       (.position bb))))
 
 (def readable-rf
@@ -196,6 +180,8 @@
        (read-writable! selection-key)
        (rf acc x)))))
 
+;; TODO: rename to buf-rf
+;; TODO: remove?
 (def attachment-rf
   (fn [rf]
     (let [attachment (volatile! nil)]
@@ -205,14 +191,20 @@
         ([acc {:nio/keys [^SelectionKey selection-key]
                :as x}]
          (when-not @attachment
-           (->> {:nio/in (->> [x] (into [] bip/bip-rf) (first))
-                 :nio/out (->> [x] (into [] bip/bip-rf) (first))
+           (->> {:nio/in (->> [{}] (into [] (comp
+                                             bip/bip-rf
+                                             (map :context/bip))) (first))
+                 :nio/out (->> [{}] (into [] (comp
+                                              bip/bip-rf
+                                              (map :context/bip))) (first))
                  :context/rf rf
                  :context/acc acc
                  :context/x x}
-                (vreset! attachment))
-           (some-> selection-key (.attach @attachment)))
-         (->> (assoc x :nio/attachment @attachment)
+                (vreset! attachment)))
+         (->> (assoc x
+                     ;;:nio/attachment @attachment
+                     :nio/in (:nio/in @attachment)
+                     :nio/out (:nio/out @attachment))
               (rf acc)))))))
 
 (defn send-rf [xf]
@@ -226,7 +218,7 @@
         ([acc] (rf acc))
         ([acc {:http/keys [req]
                :nio/keys [^SelectionKey selection-key]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               {:keys [reserve commit block decommit]} :nio/out
                :as x}]
          (if @once
            (rf acc x)
@@ -261,7 +253,8 @@
                  (.put dst src)
                  (.flip dst)
                  (commit dst)
-                 (let [written (write! selection-key)]
+                 (let [written (write! x)]
+                   (prn ::written written)
                    (if-not (> written 0)
                      (do
                        ;; socket buffer full so waiting to clear
@@ -290,7 +283,7 @@
         ([acc] (rf acc))
         ([acc {:http/keys [req]
                :nio/keys [selection-key]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/in} :nio/attachment
+               {:keys [reserve commit block decommit]} :nio/in
                :as x}]
          (if-not @once
            (let [bb (block)]
@@ -329,7 +322,7 @@
         ([acc {:nio/keys [selection-key]
                :http/keys [req]
                :context/keys [^ByteBuffer src]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/out} :nio/attachment
+               {:keys [reserve commit block decommit]} :nio/out
                :as x}]
          (when-not @once
            (let [dst (reserve)
@@ -341,7 +334,7 @@
              (.put dst src)
              (.flip dst)
              (commit dst)
-             (write! selection-key)
+             (write! x)
              (vreset! once true)))
          (let [bb (block)]
            (if (.hasRemaining bb)
@@ -358,16 +351,10 @@
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:http/keys [req]
-               {{{:keys [reserve commit block decommit] :as bip} :context/bip} :nio/in} :nio/attachment
+               {:keys [reserve commit block decommit]} :nio/in
                :as x}]
          (let [bb (block)]
            (when (.hasRemaining bb)
-             #_(prn ::res bb)
-             #_(->> bb
-                    (.decode jaq.http.xrf.params/default-charset)
-                    (.toString)
-                    (map (fn [e] (rf acc (assoc x :char e))))
-                    (dorun))
              (->> bb
                   (.limit)
                   (range)
@@ -376,18 +363,12 @@
                            (if @parsed
                              (->> (assoc x
                                          :context/parsed! parsed!
-                                         ;;:context/done! done!
                                          :byte b)
                                   (rf acc))
                              (->> (assoc x
                                          :context/parsed! parsed!
-                                         ;;:context/done! done!
                                          :char (char b))
                                   (rf acc))))))
-                  #_(map (fn [_]
-                           (let [c (-> bb (.get) (char))]
-                             #_(prn c)
-                             (->> c (assoc x :char) (rf acc)))))
                   (doall))
              (decommit bb))
            (rf acc)))))))
@@ -400,7 +381,7 @@
       ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
        (when (and (.isValid selection-key)
                   (.isReadable selection-key))
-         (read! selection-key))
+         (read! x))
        (rf acc x)))))
 
 (def write-rf
@@ -411,7 +392,7 @@
       ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
        (when (and (.isValid selection-key)
                   (.isWritable selection-key))
-         (write! selection-key))
+         (write! x))
        (rf acc x)))))
 
 (def connect-rf
@@ -457,19 +438,26 @@
                 (non-blocking)
                 (vreset! channel)
                 (register! selector
-                           (assoc attachment
-                                  :context/parent-rf rf
-                                  :context/x x
+                           (assoc x ;;attachment
+                                  :context/x (assoc x
+                                                    :nio/in (->> [x] (into [] (comp
+                                                                               bip/bip-rf
+                                                                               (map :context/bip))) (first))
+                                                    :nio/out (->> [x] (into [] (comp
+                                                                                bip/bip-rf
+                                                                                (map :context/bip))) (first)))
                                   ;;:context/rf (xf (rf/result-fn))
                                   :context/rf ((comp
                                                 xf
                                                 (continuation-rf rf))
                                                (rf/result-fn))))
                 (writable!)
-                #_((fn [^SelectionKey e]
-                     (.wakeup selector)
-                     e))
-                (vreset! selection-key)))
+                (vreset! selection-key))
+           (-> @selection-key
+               ;; TODO: fix
+               (.attachment)
+               (assoc-in [:context/x :nio/selection-key] @selection-key)
+               (->> (.attach @selection-key))))
          (->> (assoc x
                      :nio/channel @channel
                      :nio/selection-key ^SelectionKey @selection-key)
@@ -485,14 +473,26 @@
                         ^SelectionKey selection-key]
              :as x}]
        (when (.isAcceptable selection-key)
-         (some->> selection-key
-                  (.channel)
-                  (accept!)
-                  (non-blocking)
-                  (register! selector
-                             (assoc attachment
-                                    :context/rf (xf (rf/result-fn))))
-                  (readable!)))
+         (let [sk (some->> selection-key
+                           (.channel)
+                           (accept!)
+                           (non-blocking)
+                           (register! selector
+                                      (assoc x
+                                             :context/x (assoc x
+                                                               :nio/in (->> [x] (into [] (comp
+                                                                                          bip/bip-rf
+                                                                                          (map :context/bip))) (first))
+                                                               :nio/out (->> [x] (into [] (comp
+                                                                                           bip/bip-rf
+                                                                                           (map :context/bip))) (first)))
+                                             :context/rf (xf (rf/result-fn))))
+                           (readable!))]
+           (-> sk
+               ;; TODO: fix
+               (.attachment)
+               (assoc-in [:context/x :nio/selection-key] sk)
+               (->> (.attach sk)))))
        (rf acc x)))))
 
 (defn bind-rf [xf]
@@ -509,13 +509,25 @@
            (->> (server-channel!)
                 (non-blocking)
                 (vreset! server-channel)
-                (listen! selector (assoc attachment
+                (listen! selector (assoc x
+                                         :context/x (assoc x
+                                                           :nio/in (->> [x] (into [] (comp
+                                                                                      bip/bip-rf
+                                                                                      (map :context/bip))) (first))
+                                                           :nio/out (->> [x] (into [] (comp
+                                                                                       bip/bip-rf
+                                                                                       (map :context/bip))) (first)))
                                          :nio/server-channel @server-channel
                                          :context/rf (xf (rf/result-fn))))
                 (vreset! selection-key)
                 ^SelectionKey (.channel)
                 (socket)
                 (bind! port))
+           ;; TODO: fix
+           (-> @selection-key
+               (.attachment)
+               (assoc-in [:context/x :nio/selection-key] @selection-key)
+               (->> (.attach @selection-key)))
            (prn ::listening port))
          (->> (assoc x
                      :nio/server-channel ^ServerSocketChannel @server-channel
@@ -558,14 +570,15 @@
                      selected-keys (into #{} keys-set)]
                  (.clear keys-set)
                  (doseq [^SelectionKey sk selected-keys]
-                   (let [{:context/keys [rf acc x parent-rf]
+                   (let [{:context/keys [rf acc x]
                           :as attachment} (.attachment sk)]
                      ;; TODO: should we do something w/ return values from channels like cleaning up?
+                     (when-not (:nio/out x)
+                       #_(prn ::sk sk ::attachment attachment))
                      (rf acc (assoc x
                                     :nio/selection-key sk
-                                    :nio/attachment attachment))
-                     (when-let [r (rf)]
-                       (some-> parent-rf (apply [acc r])))))))
+                                    ;;:nio/attachment attachment
+                                    ))))))
              acc)))))))
 
 (def close-rf
@@ -589,13 +602,7 @@
 (defn thread-rf [xf]
   (fn [rf]
     (let [thread (volatile! nil)
-          result (volatile! nil)
-          steps (fn [rf acc x]
-                  (if-let [r (rf)]
-                    (vreset! result r)
-                    (do
-                      (rf acc x)
-                      (recur rf acc x))))]
+          result (volatile! nil)]
       (fn
         ([] (rf))
         ([acc] (rf acc))
@@ -692,6 +699,95 @@
             (update x :http/req conj body)
             x)))))
 
+(def ssl-connection
+  (comp ;; ssl connection
+   ssl/ssl-rf
+   valid-rf
+   connect-rf
+   read-rf
+   write-rf
+   ;; need to register for both writable/readable
+   (rf/once-rf (fn [{:nio/keys [selection-key] :as x}]
+                 (read-writable! selection-key)
+                 x))
+   #_(rf/debug-rf ::handshake)
+   ssl/handshake-rf))
+
+(def json-response
+  (comp
+   (rf/one-rf
+    :http/response
+    (comp
+     (map (fn [{:keys [byte] :as x}]
+            (assoc x :char (char byte))))
+     header/response-line
+     header/headers))
+   (map (fn [{{:keys [headers status]} :http/response
+              :as x}]
+          (assoc x
+                 :headers headers
+                 :status status)))
+   #_(rf/debug-rf ::response)
+   http/chunked-rf
+   http/text-rf
+   body-rf))
+
+(def close-connection
+  (comp
+   (map (fn [{:http/keys [chunks body json]
+              :nio/keys [^SelectionKey selection-key ^Selector selector]
+              :keys [headers]
+              :as x}]
+          ;; clean up channel
+          (prn ::cleanup selection-key)
+          (-> selection-key (.channel) (.close))
+          (.cancel selection-key)
+          (.wakeup selector)
+          x))))
+
+(def auth-chan
+  (comp
+   auth/credentials-rf
+   auth/refresh-rf ;; provides hostname
+   (rf/branch (fn [{:oauth2/keys [expires-in]}]
+                (> (System/currentTimeMillis) expires-in))
+              (channel-rf
+               (comp
+                ssl-connection
+                (rf/debug-rf ::attachment)
+                ;; send ssl rf
+                (ssl/request-ssl-rf
+                 http/http-rf)
+                ;; wait for response
+                (ssl/receive-ssl-rf
+                 json-response)
+                ;; process response
+                (map (fn [{{:keys [expires-in]} :http/json
+                           :as x}]
+                       (if expires-in
+                         (->> expires-in
+                              (* 1000)
+                              (+ (System/currentTimeMillis))
+                              (assoc-in x [:http/json :expires-in]))
+                         x)))
+                (map (fn [{:http/keys [json]
+                           :context/keys [request]
+                           :as x}]
+                       (let [oauth2 (->> json
+                                         (map (fn [[k v]]
+                                                [(keyword "oauth2" (name k)) v]))
+                                         (into {}))]
+                         (prn ::oauth2 oauth2)
+                         (merge x oauth2))))
+                auth/store-rf
+                #_(rf/debug-rf ::done)
+                ;; clean up connection
+                close-connection))
+              rf/identity-rf)
+   (drop-while (fn [{:oauth2/keys [expires-in]}]
+                 (> (System/currentTimeMillis) expires-in)))
+   #_(rf/debug-rf ::authed)))
+
 #_(
    *e
    *ns*
@@ -720,7 +816,7 @@
              (thread-rf
               (comp
                selector-rf
-               attachment-rf
+               #_attachment-rf
                (select-rf
                 (comp
                  (bind-rf
@@ -737,7 +833,7 @@
                                  x))
                    (accept-rf
                     (comp
-                     attachment-rf
+                     #_attachment-rf
                      valid-rf
                      read-rf
                      write-rf
@@ -823,7 +919,9 @@
                        #_(rf/once-rf (fn [{:nio/keys [^SelectionKey selection-key] :as x}]
                                        (writable! selection-key)
                                        x))
-                       (send-rf response-rf)
+                       (send-rf (comp
+                                 response-rf))
+                       #_(rf/debug-rf ::send)
                        (rf/once-rf (fn [{:nio/keys [^SelectionKey selection-key] :as x}]
                                      (readable! selection-key)
                                      x))))))))))
@@ -1028,6 +1126,7 @@
                          (rf/once-rf (fn [{:nio/keys [selection-key] :as x}]
                                        (read-writable! selection-key)
                                        x))
+                         (rf/debug-rf ::handshake)
                          ssl/handshake-rf)
          json-response (comp
                         (rf/one-rf
@@ -1057,9 +1156,6 @@
                                   (.cancel selection-key)
                                   (.wakeup selector)
                                   x)))
-         wakeup (map (fn [{:nio/keys [selector] :as x}]
-                       (.wakeup selector)
-                       x))
          auth-chan (comp
                     auth/credentials-rf
                     auth/refresh-rf ;; provides hostname
@@ -1067,8 +1163,8 @@
                                  (> (System/currentTimeMillis) expires-in))
                                (channel-rf
                                 (comp
-                                 attachment-rf
                                  ssl-connection
+                                 (rf/debug-rf ::attachment)
                                  ;; send ssl rf
                                  (ssl/request-ssl-rf
                                   http/http-rf)
@@ -1096,18 +1192,7 @@
                                  #_auth/store-rf
                                  #_(rf/debug-rf ::done)
                                  ;; clean up connection
-                                 close-connection
-                                 #_(fn [rf] ;; continuation
-                                     (fn
-                                       ([] (rf))
-                                       ([acc] (rf acc))
-                                       ([acc {:context/keys []
-                                              {:context/keys [parent-rf]} :nio/attachment
-                                              :as x}]
-                                        ;; TODO: fix
-                                        (let [parent-rf (-> x :nio/attachment :nio/in :nio/attachment :context/parent-rf)]
-                                          (some-> parent-rf (apply [acc x]))
-                                          acc))))))
+                                 close-connection))
                                rf/identity-rf)
                     (drop-while (fn [{:oauth2/keys [expires-in]}]
                                   (> (System/currentTimeMillis) expires-in)))
@@ -1146,7 +1231,7 @@
                   (channel-rf
                    (comp
                     #_(rf/debug-rf ::request)
-                    attachment-rf
+                    #_attachment-rf
                     ssl-connection
                     (ssl/request-ssl-rf http/http-rf)
                     #_(rf/debug-rf ::requested)
@@ -1176,15 +1261,16 @@
    (-> x :async/thread (.stop))
    (-> x :async/result (deref))
 
-   (->> y :nio/attachment :nio/in :nio/attachment :context/parent-rf)
-   (-> y :oauth2/access-token)
-   (-> y :http/host)
-   (->> y (filter (fn [[k v]] (= "http" (namespace k)))) (into {}))
+   (->> y (filter (fn [[k v]] (= "nio" (namespace k)))) (into {}))
    (-> x :nio/selector (.wakeup))
    (-> x :nio/selector (.keys) (empty?))
    (-> x :nio/selector (.keys))
-   (-> x :nio/selector (.keys) (first) (read!))
-   (-> x :nio/selector (.keys) (first) (write!))
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x #_(write!))
+   (def y *1)
+   (-> y (write!))
+   (-> y :nio/selection-key)
+   (-> x :nio/selector (.keys) (first) (.isWritable))
+   *e
 
    (->> x :http/chunks (count))
    (->> x :http/chunks (map count))
@@ -1456,141 +1542,218 @@
    (into [] http/http-rf [#:http{:method :GET :host :foo :path :bar}])
 
    ;; upload
-   (let [selector (selector!)
-         xf (comp
-             (rf/branch (fn [{:oauth2/keys [expires-in]}]
-                          (> (System/currentTimeMillis) expires-in))
-                        auth-rf
-                        rf/identity-rf)
-             attachment-rf
-             channel-rf
-             ssl/ssl-rf
-             process-rf
-             ssl/handshake-rf
-             storage/files-rf
-             #_(map (fn [{:file/keys [path] :as x}]
-                      (prn ::path path)
-                      x))
-             ;; upload one file
-             (rf/branch (fn [{:file/keys [path]}]
-                          path)
-                        (comp
-                         (rf/once-rf
-                          (comp
-                           storage/file-rf
-                           storage/session-rf
-                           storage/rest-service-rf
-                           http/http-rf
-                           selector-rf
-                           ssl/request-ssl-rf
-                           ssl/response-ssl-rf
-                           header/response-line
-                           header/headers
-                           http/parsed-rf
-                           http/chunked-rf
-                           http/text-rf
-                           body-rf
-                           (comp
-                            (fn [rf]
-                              (let [once (volatile! false)]
-                                (fn
-                                  ([] (rf))
-                                  ([acc] (rf acc))
-                                  ([acc {:storage/keys [objects bucket]
-                                         :http/keys [body query-params]
-                                         :keys [status headers]
-                                         {:keys [location]} :headers
-                                         :context/keys [parsed! done!]
-                                         :as x}]
-                                   (when-not @once
-                                     (prn ::location location status headers body)
-                                     (parsed!)
-                                     (done!)
-                                     (vreset! once true))
-                                   #_(prn ::location location)
-                                   (-> x
-                                       (dissoc :http/body)
-                                       (dissoc :http/chunks)
-                                       (assoc-in [:http/params :bucket] bucket)
-                                       (assoc-in [:http/query-params :upload-id] (-> location (string/split #"=") (last)))
-                                       (->> (rf acc)))))))
-                            storage/open-rf
-                            storage/read-rf
-                            storage/flip-rf
-                            storage/close-rf
-                            storage/upload-rf
-                            storage/rest-service-rf
-                            http/http-rf
-                            (map (fn [{:context/keys [wait! go!] :as x}]
-                                   (wait!)
-                                   x))
-                            ssl/request-ssl-rf
-                            ssl/response-ssl-rf
-                            (rf/once-rf
-                             (comp
-                              header/response-line
-                              header/headers
-                              http/parsed-rf
-                              http/chunked-rf
-                              http/text-rf
-                              body-rf
-                              (map (fn [{:context/keys [parsed!] :as x}]
-                                     (parsed!)
-                                     x))))
-                            (drop-while (fn [{{:keys [range]} :headers
-                                              :keys [status]
-                                              :context/keys [clear! go!]
-                                              :file/keys [size]
-                                              :as x}]
-                                          (prn size status (:headers x))
-                                          (go!)
-                                          (clear!)
-                                          (= status 308)))
-                            (map (fn [{:context/keys [wait! next!] :as x}]
-                                   (wait!)
-                                   (next!)
-                                   x))))))
-                        rf/identity-rf)
-             (drop-while (fn [{:file/keys [path]
-                               :keys [status]}]
-                           (and (= status 200) path))))
-         rf (xf (rf/result-fn))]
-     (rf nil
-         (merge
-          {:nio/selector selector
-           :context/bip-size (* 5 4096)
-           ;;:file/path "./target/clojure-1.10.1.jar" ;; "./deps.edn" ;; "./target/asm-all-4.2.jar"
-           :file/prefix "p/profiles"
-           :file/dir "./profiles"
-           ;;:http/chunk-size (* 256 1024)
-           :storage/bucket "staging.alpeware-foo-bar.appspot.com"
-           :http/params {;;:project "alpeware-top-9"
-                         ;;:maxResults 10
-                         ;;:object "apps/v1/bar/baz.json"
-                         ;;:bucket "alpeware-deployments"
-                         :bucket "staging.alpeware-foo-bar.appspot.com"}
-           ;;:http/headers {:Connection "Keep-Alive"}
-           :http/host storage/root
-           :http/scheme :https
-           :http/port 443
-           :http/minor 1 :http/major 1}
-          oauth2))
-     (let [step (partial reactor-main selector)
-           start (System/currentTimeMillis)
-           timeout (* 60 1000)
-           steps (fn []
-                   (if-let [r (rf)]
-                     (def x r)
-                     (when (< (System/currentTimeMillis) (+ start timeout))
-                       (step)
-                       (recur))))]
-       (steps)
-       #_step
-       #_{:rf rf :step step :steps steps}))
+   (let [xf (comp
+             selector-rf
+             (x/time
+              (thread-rf
+               (comp
+                (select-rf
+                 (comp
+                  auth-chan
+                  (drop-while (fn [{:oauth2/keys [expires-in]}]
+                                (and (not expires-in)
+                                     (> (System/currentTimeMillis) expires-in))))
+                  (rf/one-rf :oauth2/access-token (comp
+                                                   (map :oauth2/access-token)))
+                  (map (fn [x]
+                         (-> x
+                             (dissoc :http/json :http/body :http/chunks :http/headers)
+                             (assoc :http/params {;;:project "alpeware-top-9"
+                                                  ;;:maxResults 10
+                                                  ;;:object "apps/v1/bar/baz.json"
+                                                  ;;:bucket "alpeware-deployments"
+                                                  :bucket "staging.alpeware-foo-bar.appspot.com"}
+                                    :file/prefix "p/profiles"
+                                    :file/path "./target/clojure-1.10.1.jar" #_"./deps.edn"
+                                    :file/dir "."
+                                    :storage/bucket "staging.alpeware-foo-bar.appspot.com"))))
+                  ;; one file
+                  (comp
+                   storage/file-rf
+                   storage/session-rf
+                   storage/rest-service-rf)
+                  #_storage/files-rf
+                  (channel-rf
+                   (comp
+                    ssl-connection
+                    (ssl/request-ssl-rf http/http-rf)
+                    (ssl/receive-ssl-rf json-response)
+                    (fn [rf]
+                      (let [once (volatile! false)
+                            loc (volatile! nil)]
+                        (fn
+                          ([] (rf))
+                          ([acc] (rf acc))
+                          ([acc {:storage/keys [objects bucket]
+                                 :http/keys [body query-params]
+                                 :keys [status headers]
+                                 {:keys [location]} :headers
+                                 :context/keys [parsed! done!]
+                                 :as x}]
+                           #_(when-not @once
+                               (prn ::location location status headers body)
+                               (parsed!)
+                               (done!)
+                               (vreset! once true))
+                           (when-not @loc
+                             (prn ::location location @loc)
+                             (vreset! loc location))
+                           (-> x
+                               (dissoc :http/body)
+                               (dissoc :http/chunks)
+                               (assoc-in [:http/params :bucket] bucket)
+                               (assoc-in [:http/query-params :upload-id] (-> @loc (string/split #"=") (last)))
+                               (->> (rf acc)))))))
+                    (comp
+                     storage/open-rf
+                     storage/read-rf
+                     storage/flip-rf
+                     storage/close-rf)
+                    (comp
+                     storage/upload-rf
+                     storage/rest-service-rf)
+                    (map (fn [{:context/keys [wait! go!] :as x}]
+                           (wait!)
+                           x))
+                    (rf/repeatedly-rf
+                     (comp
+                      (ssl/request-ssl-rf http/http-rf)
+                      (ssl/receive-ssl-rf json-response)))
+                    (drop-while (fn [{{:keys [range]} :headers
+                                      :keys [status]
+                                      :context/keys [clear! go!]
+                                      :file/keys [size]
+                                      :as x}]
+                                  (prn size status (:headers x))
+                                  (go!)
+                                  #_(clear!)
+                                  (= status 308)))
+                    (map (fn [{:context/keys [wait! next!] :as x}]
+                           (wait!)
+                           #_(next!)
+                           x))
+                    close-connection))
+                  #_(drop-while (fn [{:storage/keys [items] :as x}]
+                                  (nil? items)))))
+                close-rf))))]
+     (->> [{:context/bip-size (* 5 4096)
+            ;;:file/path "./target/clojure-1.10.1.jar" ;; "./deps.edn" ;; "./target/asm-all-4.2.jar"
+            ;;:http/chunk-size (* 256 1024)
+            :http/scheme :https
+            :http/port 443
+            :http/method :GET
+            :http/minor 1 :http/major 1}]
+          (into [] xf)))
+   (def x (first *1))
+
+   (-> x :async/thread (.stop))
+   {:context/bip-size (* 5 4096)
+    ;;:file/path "./target/clojure-1.10.1.jar" ;; "./deps.edn" ;; "./target/asm-all-4.2.jar"
+    :file/prefix "p/profiles"
+    :file/dir "./profiles"
+    ;;:http/chunk-size (* 256 1024)
+    :storage/bucket "staging.alpeware-foo-bar.appspot.com"
+    :http/params {;;:project "alpeware-top-9"
+                  ;;:maxResults 10
+                  ;;:object "apps/v1/bar/baz.json"
+                  ;;:bucket "alpeware-deployments"
+                  :bucket "staging.alpeware-foo-bar.appspot.com"}
+    ;;:http/headers {:Connection "Keep-Alive"}
+    :http/host storage/root
+    :http/scheme :https
+    :http/port 443
+    :http/minor 1 :http/major 1}
 
    (in-ns 'jaq.http.xrf.nio)
+   *ns*
    (-> x :http/req)
    (-> x :rest/method)
+
+   #_(comp
+      storage/files-rf
+      ;; upload one file
+      (rf/branch (fn [{:file/keys [path]}]
+                   path)
+                 (comp
+                  (rf/once-rf
+                   (comp
+                    storage/file-rf
+                    storage/session-rf
+                    storage/rest-service-rf
+                    http/http-rf
+                    selector-rf
+                    ssl/request-ssl-rf
+                    ssl/response-ssl-rf
+                    header/response-line
+                    header/headers
+                    http/parsed-rf
+                    http/chunked-rf
+                    http/text-rf
+                    body-rf
+                    (comp
+                     (fn [rf]
+                       (let [once (volatile! false)]
+                         (fn
+                           ([] (rf))
+                           ([acc] (rf acc))
+                           ([acc {:storage/keys [objects bucket]
+                                  :http/keys [body query-params]
+                                  :keys [status headers]
+                                  {:keys [location]} :headers
+                                  :context/keys [parsed! done!]
+                                  :as x}]
+                            (when-not @once
+                              (prn ::location location status headers body)
+                              (parsed!)
+                              (done!)
+                              (vreset! once true))
+                            #_(prn ::location location)
+                            (-> x
+                                (dissoc :http/body)
+                                (dissoc :http/chunks)
+                                (assoc-in [:http/params :bucket] bucket)
+                                (assoc-in [:http/query-params :upload-id] (-> location (string/split #"=") (last)))
+                                (->> (rf acc)))))))
+                     storage/open-rf
+                     storage/read-rf
+                     storage/flip-rf
+                     storage/close-rf
+                     storage/upload-rf
+                     storage/rest-service-rf
+                     http/http-rf
+                     (map (fn [{:context/keys [wait! go!] :as x}]
+                            (wait!)
+                            x))
+                     ssl/request-ssl-rf
+                     ssl/response-ssl-rf
+                     (rf/once-rf
+                      (comp
+                       header/response-line
+                       header/headers
+                       http/parsed-rf
+                       http/chunked-rf
+                       http/text-rf
+                       body-rf
+                       (map (fn [{:context/keys [parsed!] :as x}]
+                              (parsed!)
+                              x))))
+                     (drop-while (fn [{{:keys [range]} :headers
+                                       :keys [status]
+                                       :context/keys [clear! go!]
+                                       :file/keys [size]
+                                       :as x}]
+                                   (prn size status (:headers x))
+                                   (go!)
+                                   (clear!)
+                                   (= status 308)))
+                     (map (fn [{:context/keys [wait! next!] :as x}]
+                            (wait!)
+                            (next!)
+                            x))))))
+                 rf/identity-rf)
+      (drop-while (fn [{:file/keys [path]
+                        :keys [status]}]
+                    (and (= status 200) path))))
 
    ;; appengine
    (let [selector (selector!)
