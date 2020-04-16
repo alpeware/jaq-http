@@ -160,26 +160,28 @@
     (.setSSLParameters engine params)
     engine))
 
-;; assumes request requires SSL - check scheme upstream
 (def ssl-rf
   (fn [rf]
-    (let [engine (volatile! nil)]
+    (let [eng (volatile! nil)]
       (fn
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:http/keys [host]
-               {:keys [reserve commit block decommit] :as bip} :nio/out
+               :ssl/keys [engine]
+               {:keys [reserve commit block decommit]} :nio/out
                :as x}]
-         (when-not @engine
-           (-> (context) (ssl-engine) (client-mode) (configure host)
-               (->> (vreset! engine)))
-           (let [dst (reserve)]
-             (.beginHandshake @engine)
-             #_(prn ::handshake host dst )
-             (-> @engine (.wrap empty-buffer dst) #_(result?))
-             (.flip dst)
-             (commit dst)))
-         (->> (assoc x :ssl/engine ^SSLEngine @engine)
+         (when-not @eng
+           (let [engine (or engine
+                            (-> (context) (ssl-engine) (client-mode) (configure host)))]
+             (->> engine (vreset! eng)))
+           (when-not engine
+             (let [dst (reserve)]
+               (.beginHandshake @eng)
+               (prn ::handshake host dst )
+               (-> @eng (.wrap empty-buffer dst) #_(result?))
+               (.flip dst)
+               (commit dst))))
+         (->> (assoc x :ssl/engine ^SSLEngine @eng)
               (rf acc)))))))
 
 #_(

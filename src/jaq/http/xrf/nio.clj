@@ -1544,155 +1544,39 @@
    ;; upload
    (let [xf (comp
              selector-rf
-             (x/time
-              (thread-rf
-               (comp
-                (select-rf
-                 (comp
-                  auth-chan
-                  (drop-while (fn [{:oauth2/keys [expires-in]}]
-                                (and (not expires-in)
-                                     (> (System/currentTimeMillis) expires-in))))
-                  (rf/one-rf :oauth2/access-token (comp
-                                                   (map :oauth2/access-token)))
-                  (map (fn [x]
-                         (-> x
-                             (dissoc :http/json :http/body :http/chunks :http/headers)
-                             (assoc :http/params {;;:project "alpeware-top-9"
-                                                  ;;:maxResults 10
-                                                  ;;:object "apps/v1/bar/baz.json"
-                                                  ;;:bucket "alpeware-deployments"
-                                                  :bucket "staging.alpeware-foo-bar.appspot.com"}
-                                    :file/prefix "p/profiles"
-                                    :file/path "./target/clojure-1.10.1.jar" #_"./deps.edn"
-                                    :file/dir "."
-                                    :storage/bucket "staging.alpeware-foo-bar.appspot.com"))))
-                  ;; one file
+             (thread-rf
+              (comp
+               (select-rf
+                (comp
+                 auth-chan
+                 (drop-while (fn [{:oauth2/keys [expires-in]}]
+                               (and (not expires-in)
+                                    (> (System/currentTimeMillis) expires-in))))
+                 (rf/one-rf :oauth2/access-token (comp
+                                                  (map :oauth2/access-token)))
+                 (map (fn [x]
+                        (-> x
+                            (dissoc :http/json :http/body :http/chunks :http/headers :ssl/engine)
+                            (assoc :http/params {:bucket "staging.alpeware-foo-bar.appspot.com"}
+                                   :http/host storage/root
+                                   :file/prefix "v"
+                                   :file/dir "./scripts"
+                                   :storage/bucket "staging.alpeware-foo-bar.appspot.com"))))
+                 (channel-rf
                   (comp
-                   storage/file-rf
-                   storage/session-rf
-                   storage/rest-service-rf)
-                  #_storage/files-rf
-                  (channel-rf
-                   (comp
-                    ssl-connection
-                    (ssl/request-ssl-rf http/http-rf)
-                    (ssl/receive-ssl-rf json-response)
-                    (fn [rf]
-                      (let [once (volatile! false)
-                            loc (volatile! nil)]
-                        (fn
-                          ([] (rf))
-                          ([acc] (rf acc))
-                          ([acc {:storage/keys [objects bucket]
-                                 :http/keys [body query-params]
-                                 :keys [status headers]
-                                 {:keys [location]} :headers
-                                 :context/keys [parsed! done!]
-                                 :as x}]
-                           #_(when-not @once
-                               (prn ::location location status headers body)
-                               (parsed!)
-                               (done!)
-                               (vreset! once true))
-                           (when-not @loc
-                             (prn ::location location @loc)
-                             (vreset! loc location))
-                           (-> x
-                               (dissoc :http/body)
-                               (dissoc :http/chunks)
-                               (assoc-in [:http/params :bucket] bucket)
-                               (assoc-in [:http/query-params :upload-id] (-> @loc (string/split #"=") (last)))
-                               (->> (rf acc)))))))
+                   ssl-connection
+                   (storage/files-rf
                     (comp
-                     storage/open-rf
-                     storage/read-rf
-                     storage/flip-rf
-                     storage/close-rf)
-                    (comp
-                     storage/upload-rf
-                     storage/rest-service-rf)
-                    (map (fn [{:context/keys [wait! go!] :as x}]
-                           (wait!)
-                           x))
-                    (rf/repeatedly-rf
+                     ;; one file
                      (comp
-                      (ssl/request-ssl-rf http/http-rf)
-                      (ssl/receive-ssl-rf json-response)))
-                    (drop-while (fn [{{:keys [range]} :headers
-                                      :keys [status]
-                                      :context/keys [clear! go!]
-                                      :file/keys [size]
-                                      :as x}]
-                                  (prn size status (:headers x))
-                                  (go!)
-                                  #_(clear!)
-                                  (= status 308)))
-                    (map (fn [{:context/keys [wait! next!] :as x}]
-                           (wait!)
-                           #_(next!)
-                           x))
-                    close-connection))
-                  #_(drop-while (fn [{:storage/keys [items] :as x}]
-                                  (nil? items)))))
-                close-rf))))]
-     (->> [{:context/bip-size (* 5 4096)
-            ;;:file/path "./target/clojure-1.10.1.jar" ;; "./deps.edn" ;; "./target/asm-all-4.2.jar"
-            ;;:http/chunk-size (* 256 1024)
-            :http/scheme :https
-            :http/port 443
-            :http/method :GET
-            :http/minor 1 :http/major 1}]
-          (into [] xf)))
-   (def x (first *1))
-
-   (-> x :async/thread (.stop))
-   {:context/bip-size (* 5 4096)
-    ;;:file/path "./target/clojure-1.10.1.jar" ;; "./deps.edn" ;; "./target/asm-all-4.2.jar"
-    :file/prefix "p/profiles"
-    :file/dir "./profiles"
-    ;;:http/chunk-size (* 256 1024)
-    :storage/bucket "staging.alpeware-foo-bar.appspot.com"
-    :http/params {;;:project "alpeware-top-9"
-                  ;;:maxResults 10
-                  ;;:object "apps/v1/bar/baz.json"
-                  ;;:bucket "alpeware-deployments"
-                  :bucket "staging.alpeware-foo-bar.appspot.com"}
-    ;;:http/headers {:Connection "Keep-Alive"}
-    :http/host storage/root
-    :http/scheme :https
-    :http/port 443
-    :http/minor 1 :http/major 1}
-
-   (in-ns 'jaq.http.xrf.nio)
-   *ns*
-   (-> x :http/req)
-   (-> x :rest/method)
-
-   #_(comp
-      storage/files-rf
-      ;; upload one file
-      (rf/branch (fn [{:file/keys [path]}]
-                   path)
-                 (comp
-                  (rf/once-rf
-                   (comp
-                    storage/file-rf
-                    storage/session-rf
-                    storage/rest-service-rf
-                    http/http-rf
-                    selector-rf
-                    ssl/request-ssl-rf
-                    ssl/response-ssl-rf
-                    header/response-line
-                    header/headers
-                    http/parsed-rf
-                    http/chunked-rf
-                    http/text-rf
-                    body-rf
-                    (comp
+                      storage/file-rf
+                      storage/session-rf
+                      storage/rest-service-rf)
+                     ;; upload url location
+                     (ssl/request-ssl-rf http/http-rf)
+                     (ssl/receive-ssl-rf json-response)
                      (fn [rf]
-                       (let [once (volatile! false)]
+                       (let [upload-id (volatile! nil)]
                          (fn
                            ([] (rf))
                            ([acc] (rf acc))
@@ -1702,58 +1586,57 @@
                                   {:keys [location]} :headers
                                   :context/keys [parsed! done!]
                                   :as x}]
-                            (when-not @once
-                              (prn ::location location status headers body)
-                              (parsed!)
-                              (done!)
-                              (vreset! once true))
-                            #_(prn ::location location)
+                            (when-not @upload-id
+                              (prn ::location location)
+                              (vreset! upload-id (-> location (string/split #"=") (last))))
                             (-> x
                                 (dissoc :http/body)
                                 (dissoc :http/chunks)
                                 (assoc-in [:http/params :bucket] bucket)
-                                (assoc-in [:http/query-params :upload-id] (-> location (string/split #"=") (last)))
+                                (assoc-in [:http/query-params :upload-id] @upload-id)
                                 (->> (rf acc)))))))
-                     storage/open-rf
-                     storage/read-rf
-                     storage/flip-rf
-                     storage/close-rf
-                     storage/upload-rf
-                     storage/rest-service-rf
-                     http/http-rf
-                     (map (fn [{:context/keys [wait! go!] :as x}]
-                            (wait!)
-                            x))
-                     ssl/request-ssl-rf
-                     ssl/response-ssl-rf
-                     (rf/once-rf
-                      (comp
-                       header/response-line
-                       header/headers
-                       http/parsed-rf
-                       http/chunked-rf
-                       http/text-rf
-                       body-rf
-                       (map (fn [{:context/keys [parsed!] :as x}]
-                              (parsed!)
-                              x))))
-                     (drop-while (fn [{{:keys [range]} :headers
-                                       :keys [status]
-                                       :context/keys [clear! go!]
-                                       :file/keys [size]
-                                       :as x}]
-                                   (prn size status (:headers x))
-                                   (go!)
-                                   (clear!)
-                                   (= status 308)))
-                     (map (fn [{:context/keys [wait! next!] :as x}]
-                            (wait!)
-                            (next!)
-                            x))))))
-                 rf/identity-rf)
-      (drop-while (fn [{:file/keys [path]
-                        :keys [status]}]
-                    (and (= status 200) path))))
+
+                     ;; read file into memory
+                     (comp
+                      storage/open-rf
+                      storage/read-rf
+                      storage/flip-rf
+                      storage/close-rf)
+
+                     ;; upload chunks of a file
+                     (comp
+                      (storage/chunks-rf
+                       (comp
+                        storage/rest-service-rf
+                        (ssl/request-ssl-rf http/http-rf)
+                        (ssl/receive-ssl-rf json-response)))
+                      (drop-while (fn [{{:keys [range]} :headers
+                                        :keys [status]
+                                        :file/keys [size]
+                                        :as x}]
+                                    (prn size status (:headers x))
+                                    (= status 308))))))
+                   (drop-while (fn [{{:keys [range]} :headers
+                                     :keys [status]
+                                     :file/keys [path size]
+                                     :as x}]
+                                 (prn path size)
+                                 path))
+                   close-connection))))
+               close-rf)))]
+     (->> [{:context/bip-size (* 5 4096)
+            :http/scheme :https
+            :http/port 443
+            :http/method :GET
+            :http/minor 1 :http/major 1}]
+          (into [] xf)))
+   (def x (first *1))
+
+   (-> x :async/thread (.stop))
+   (-> x :nio/selector (.close))
+
+   (in-ns 'jaq.http.xrf.nio)
+   *ns*
 
    ;; appengine
    (let [selector (selector!)

@@ -284,7 +284,7 @@
            (vreset! once true))
          (rf acc x))))))
 
-(def files-rf
+#_(def files-rf
   (fn [rf]
     (let [fs (volatile! nil)
           f (volatile! nil)
@@ -307,6 +307,42 @@
                      :context/next! next!
                      :file/path (some-> @f (.getPath)))
               (rf acc)))))))
+
+(defn files-rf [xf]
+  (fn [rf]
+    (let [done (volatile! false)
+          xrf (volatile! nil)
+          fs (volatile! nil)
+          f (volatile! nil)
+          next! (fn []
+                  (vreset! xrf (xf (rf/result-fn)))
+                  (vreset! f (first @fs))
+                  (vswap! fs rest))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:file/keys [dir]
+               :as x}]
+         (if @done
+           (rf acc x)
+           (do
+             (when-not @fs
+               (->> dir
+                    (io/file)
+                    (file-seq)
+                    (filter (fn [e] (.isFile e)))
+                    (vreset! fs))
+               (next!))
+             (->> (assoc x
+                         :file/path (some-> @f (.getPath)))
+                  (@xrf acc))
+             (if-let [xr (@xrf)]
+               (do
+                 (next!)
+                 (when (empty? @fs)
+                   (vreset! done true))
+                 (rf acc xr))
+               acc))))))))
 
 #_(
    (in-ns 'jaq.gcp.storage)
@@ -489,9 +525,60 @@
                            :context/go! go!)
                     (rf acc))))))))))
 
+(defn chunks-rf [xf]
+  (fn [rf]
+    (let [chunk (volatile! nil)
+          content-range (volatile! nil)
+          done (volatile! false)
+          xrf (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {{:keys [bucket] :as params} :http/params
+               :http/keys [headers chunk-size location]
+               :file/keys [^FileChannel channel ^ByteBuffer buf size alignment]
+               :or {chunk-size default-chunk-size}
+               :as x}]
+         (if @done
+           (rf acc x)
+           (do
+             (when-not @chunk
+               (-> buf
+                   (.slice)
+                   (as-> e
+                       (if (< (.limit e) chunk-size)
+                         e
+                         (.limit e chunk-size)))
+                   (->> (vreset! chunk)))
+               (let [index (.position buf)
+                     offset (->> @chunk (.remaining) (dec) (+ index))]
+                 (vreset! content-range (str "bytes " index "-" offset "/" size))
+                 (.position buf (inc offset)))
+               (vreset! xrf (xf (rf/result-fn))))
+             #_(prn ::storage content-range (.hasRemaining b) (.hasRemaining buf) b buf)
+             (->> (assoc (dissoc x :http/params)
+                         :http/headers (assoc headers
+                                              "Content-Range" @content-range
+                                              :content-length (.limit @chunk)
+                                              :content-type "application/octet-stream")
+                         :http/body @chunk
+                         :rest/service-path [:upload :storage version]
+                         :rest/method :POST
+                         :rest/path [:b bucket :o])
+                  (@xrf acc))
+             (if-let [xr (@xrf)] ;; done with one chunk
+               (do
+                 (vreset! chunk nil)
+                 (vreset! content-range nil)
+                 (when-not (.hasRemaining buf)
+                   (vreset! done true))
+                 (rf acc xr))
+               acc))))))))
+
 #_(
    (in-ns 'jaq.gcp.storage)
    *e
+
    (into [] (comp
              file-rf
              open-rf
