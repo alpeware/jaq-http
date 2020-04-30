@@ -72,16 +72,12 @@
         ([] (rf))
         ([acc] (rf acc))
         ([acc x]
-         (let []
-           #_(prn x)
-           #_(->> x (map (fn [e] (@xf-rf nil e))) (doall))
-           (@xf-rf nil x)
-           (if-let [x' (@xf-rf)]
-             (do
-               #_(prn ::reset xf)
-               (vreset! xf-rf (init))
-               (rf acc x'))
-             acc)))))))
+         (@xf-rf acc x)
+         (if-let [x' (@xf-rf)]
+           (do
+             (vreset! xf-rf (init))
+             (rf acc x'))
+           acc))))))
 
 (defn one-rf [k xf]
   (fn [rf]
@@ -98,7 +94,6 @@
              (xrf acc x)
              (if-let [x' (xrf)]
                (do
-                 #_(prn k x')
                  (vreset! val x')
                  (vreset! once true)
                  (rf acc (assoc x k x')))

@@ -2,18 +2,24 @@
  :mvn/local-repo "./.m2",
  :deps
  {org.clojure/clojure {:mvn/version "1.10.1"},
-  org.clojure/data.json {:mvn/version "0.2.7"}
+  org.clojure/data.json {:mvn/version "0.2.7"},
   com.alpeware/jaq-repl
   {:git/url "https://github.com/alpeware/jaq-repl",
    :tag "HEAD",
    :sha "a01f8db75944d8066865f482b2b1383090ed78e7"},
+  hiccup {:mvn/version "1.0.5"},
+  garden {:mvn/version "1.3.9"},
   net.cgrand/xforms
   {:mvn/version "0.19.2", :exclusions [org.clojure/clojurescript org.clojure/clojure]}},
  :aliases
  {:b {:extra-paths ["scripts"], :main-opts ["-m" "build"]},
   :u {:extra-paths ["scripts"], :main-opts ["-m" "upload"]},
-  :m {:main-opts ["-m" "jaq.http.server"]},
-  :s {:main-opts ["-m" "jaq.http.xrf.nio"]},
+  :d {:extra-deps
+      {org.clojure/clojurescript {:mvn/version "1.10.520"}
+       cljsjs/incremental-dom {:mvn/version "0.5.2-1"}
+       reagent {:mvn/version "0.10.0"}
+       }
+      :main-opts ["-m" "jaq.http.server"]},
   :p
   {:extra-paths ["profiles"],
    :main-opts ["-m" "jaq.http.server"],

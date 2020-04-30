@@ -11,7 +11,7 @@
    *ns*
    (require 'jaq.http.xrf.header :reload)
    (in-ns 'jaq.http.xrf.header)
-   (fnp foo [])
+
    )
 
 (defn split [k pred f]
@@ -20,13 +20,10 @@
           vacc (volatile! [])
           val (volatile! nil)
           assoc-fn (fn [acc x]
-                     (let [f (if (instance? clojure.lang.IEditableCollection x)
-                               assoc! assoc)]
-                       (->>
-                        @val
-                        (assoc x k)
-                        #_(f x k)
-                        (rf acc))))]
+                     (->>
+                      @val
+                      (assoc x k)
+                      (rf acc)))]
       (fn split
         ([] (rf))
         ([acc] (rf acc))
@@ -44,7 +41,7 @@
            :else
            (do
              (vswap! vacc conj char)
-             (rf acc))))))))
+              acc)))))))
 
 #_(
 
@@ -59,11 +56,12 @@
                       params/params) rf)
           decode (volatile! false)
           length (volatile! 0)
-          done (volatile! true)]
-      (fn query
+          done (volatile! true)
+          p (volatile! nil)]
+      (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:keys [index char] :as x}]
+        ([acc {:keys [char] :as x}]
          (vswap! length inc)
          (cond
            (and (= @length 1)
@@ -73,24 +71,50 @@
              (vreset! done false)
              acc)
 
+           ;; nothing to do
            (and @done (not @decode))
            (rf acc x)
 
-           #_(and @decode (= char \space))
-           #_(->> (assoc x :eob true)
-                  (parser-rf acc))
+           (and @done @decode)
+           (->> (assoc x :params @p)
+                (rf acc))
 
-           @decode
-           (do
-             (parser-rf acc x))))))))
+           (and
+            (not @done)
+            @decode)
+           (parser-rf acc x)
+           #_(let [{:keys [params] :as x'} (parser-rf acc x)]
+             #_(prn ::params params x)
+             (if params
+               (do
+                 (prn ::params params)
+                 (vreset! done true)
+                 (vreset! p params)
+                 (->> (assoc x :params @p)
+                      (rf acc)))
+               acc))))))))
 
 #_(
    *ns*
    (in-ns 'jaq.http.xrf.header)
+   (require 'jaq.http.xrf.header :reload)
    (into [] (comp
              rf/index
-             query)
-         "?foo=bar+baz&fooz=bazz#foo ")
+             path
+             query
+             (take 2)
+             )
+         "/foo?foo=bar+baz&fooz=bazz HTTP")
+
+   (into [] (comp
+             rf/index
+             path
+             query
+             (take 2)
+             )
+         "/foo?foo=%281%2B1%29 HTTP")
+
+   ;; %28alert%20%22hello%22%29
    )
 
 (def method
@@ -198,7 +222,20 @@
    (into [] (comp
              rf/index
              request-line)
-         "GET / HTTP/1.1\n\r ")
+         "GET /foo?a=b&c=%28alert%20%22hello%22%29 HTTP/1.1\n\r ")
+
+   (into [] (comp
+             rf/index
+             method
+             (ignore #{\space})
+             path
+             query
+             #_fragment
+             (map (fn [x] (prn x) x))
+             #_(ignore #{\space})
+             #_scheme
+             #_(take 2))
+         "GET /foo?foo=bar HTTP/1.1\n\r a")
    )
 
 (def headers

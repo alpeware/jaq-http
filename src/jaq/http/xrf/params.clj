@@ -52,7 +52,9 @@
                          (if
                              (and content-length
                                   (= @length content-length))
-                           (->> (conj x' {:char c :eob true})
+                           (->> (assoc x'
+                                       :char c
+                                       :eob true)
                                 (rf acc'))
                            (do
                              (->> (assoc x' :char c)
@@ -145,6 +147,8 @@
         ([acc {:keys [index char eob]
                :as x}]
          (cond
+           @done
+           (assoc-fn acc x)
 
            ;; only key but no value
            (and (= char :assign) eob)
@@ -154,7 +158,8 @@
                          (vreset! val))
                  pv nil]
              (vswap! params-map conj {pk pv})
-             (vreset! done false)
+             #_(vreset! done false)
+             (vreset! done true)
              (vreset! param-name false)
              (vreset! vacc [])
              (vreset! val nil)
@@ -192,7 +197,8 @@
                                     nil
                                     s))))]
              (vswap! params-map conj {pk pv})
-             (vreset! done false)
+             #_(vreset! done false)
+             (vreset! done true)
              (vreset! param-name false)
              (vreset! vacc [])
              (vreset! val nil)
@@ -207,6 +213,18 @@
    *e
    *ns*
    (in-ns 'jaq.http.xrf.params)
+
+   (let [original {:foo :bar :baz :bar}
+         encoded (str
+                  (->> original (map (fn [[k v]] (str (name k) "=" v))) (clojure.string/join "&"))
+                  " foo bar")
+         xform (comp
+                jaq.http.xrf.rf/index
+                (decoder)
+                params)]
+     (into [] (comp
+               xform
+               (take 2)) encoded))
 
    (let [original {:foo nil}
          encoded (str

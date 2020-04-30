@@ -434,7 +434,8 @@
                        (let [^ByteBuffer bb3 ((:reserve bip-in))]
                          (.put bb3 scratch)
                          (.flip bb3)
-                         (commit bb3))))))
+                         (commit bb3)))
+                     acc)))
 
                :buffer-overflow
                (prn ::buffer-overflow bb scratch)

@@ -127,13 +127,13 @@
       (cond
         (< n 0) ;; end of stream
         (do
-          (prn ::eos)
+          (prn ::eos selection-key)
           (.interestOps selection-key 0)
           (.cancel selection-key))
 
         (> n 0) ;; read some bytes
         (do
-          (prn ::read n)
+          #_(prn ::read n)
           (->> bb
                (.flip)
                (commit))))
@@ -254,7 +254,7 @@
                  (.flip dst)
                  (commit dst)
                  (let [written (write! x)]
-                   (prn ::written written)
+                   #_(prn ::written written)
                    (if-not (> written 0)
                      (do
                        ;; socket buffer full so waiting to clear
@@ -262,9 +262,11 @@
                        acc)
                      (do
                        (recur acc x)))))
-               (do
-                 (->> x
-                      (rf acc)))))))))))
+               (if (empty? @requests)
+                 (do
+                   (vreset! once true)
+                   (rf acc x))
+                 acc)))))))))
 
 #_(
    (in-ns 'jaq.http.xrf.nio)
@@ -304,6 +306,7 @@
                  (decommit bb)
                  (if-let [xr (xrf)]
                    (do
+                     #_(prn ::receive ::result)
                      (vreset! once true)
                      (vreset! result xr)
                      (rf acc xr))
@@ -341,7 +344,7 @@
              (rf acc)
              (rf acc x))))))))
 
-(def response-rf
+#_(def response-rf
   (fn [rf]
     (let [once (volatile! false)
           parsed (volatile! false)
@@ -577,6 +580,8 @@
                        #_(prn ::sk sk ::attachment attachment))
                      (rf acc (assoc x
                                     :nio/selection-key sk
+                                    :context/rf rf
+                                    :context/x x
                                     ;;:nio/attachment attachment
                                     ))))))
              acc)))))))
@@ -681,6 +686,14 @@
           (update x :http/req conj (str status " " reason))))
    (map (fn [{:http/keys [req] :as x}]
           (update x :http/req conj "\r\n")))
+   #_(map (fn [{:http/keys [headers body] :as x}]
+            (prn ::body body)
+            (cond
+              (ifn? body)
+              (update x :http/body (body))
+
+              :else
+              x)))
    (map (fn [{:http/keys [headers body] :as x}]
           (cond
             (not body)
@@ -698,6 +711,10 @@
           (if body
             (update x :http/req conj body)
             x)))))
+
+#_(
+   (in-ns 'jaq.http.xrf.nio)
+   )
 
 (def ssl-connection
   (comp ;; ssl connection
@@ -807,6 +824,7 @@
 
    ;; repl server
    (let [xf (comp
+             selector-rf
              (map (fn [x]
                     (let [shutdown (volatile! nil)]
                       (assoc x
@@ -815,25 +833,23 @@
                                                   (-> @shutdown (apply [])))))))
              (thread-rf
               (comp
-               selector-rf
-               #_attachment-rf
+               #_selector-rf
                (select-rf
                 (comp
                  (bind-rf
                   (comp
-                   (rf/once-rf (fn [{:context/keys [shutdown]
-                                     :nio/keys [selector server-channel selection-key] :as x}]
-                                 (vreset! shutdown (fn []
-                                                     (prn ::shutting ::down x)
-                                                     (doseq [sk (.keys selector)]
-                                                       (-> sk (.channel) (.close))
-                                                       (-> sk (.cancel)))
-                                                     (.wakeup selector)
-                                                     selector))
-                                 x))
+                   #_(rf/once-rf (fn [{:context/keys [shutdown]
+                                       :nio/keys [selector server-channel selection-key] :as x}]
+                                   (vreset! shutdown (fn []
+                                                       (prn ::shutting ::down x)
+                                                       (doseq [sk (.keys selector)]
+                                                         (-> sk (.channel) (.close))
+                                                         (-> sk (.cancel)))
+                                                       (.wakeup selector)
+                                                       selector))
+                                   x))
                    (accept-rf
                     (comp
-                     #_attachment-rf
                      valid-rf
                      read-rf
                      write-rf
@@ -841,7 +857,6 @@
                       (comp
                        (receive-rf
                         (comp
-                         #_(rf/debug-rf ::receive)
                          (rf/one-rf
                           :http/request
                           (comp
@@ -857,7 +872,9 @@
                                        :headers headers
                                        :status status)))
                          (rf/choose-rf
-                          :path
+                          (fn [{:keys [path]}]
+                            (str "/"
+                             (some-> path (string/split #"/") (second))))
                           {"/repl" (comp
                                     (map (fn [{:keys [byte] :as x}]
                                            (assoc x :char (char byte))))
@@ -890,6 +907,43 @@
                                                               :http/headers {:content-type "text/plain"
                                                                              :connection "keep-alive"}
                                                               :http/body "Forbidden"))))))
+                           "/ws" (comp
+                                  (map (fn [{{:keys [sec-websocket-key]} :headers
+                                             :as x}]
+                                         #_(prn (:headers x))
+                                         (assoc x
+                                                :http/status 101
+                                                :http/reason "Switching Protocols"
+                                                :http/headers {:upgrade "websocket"
+                                                               :connection "upgrade"
+                                                               :sec-websocket-accept (jaq.http.xrf.websocket/handshake sec-websocket-key)}))))
+                           "/out" (comp
+                                   (map (fn [{:keys [path] :as x}]
+                                          (assoc x :file/path (str "." path))))
+                                   storage/file-rf
+                                   storage/open-rf
+                                   storage/read-rf
+                                   storage/flip-rf
+                                   storage/close-rf
+                                   (rf/branch (fn [{:file/keys [size]}]
+                                                (some-> size (> 0)))
+                                              (map (fn [{:keys [path]
+                                                         :file/keys [^ByteBuffer buf content-type]
+                                                         :as x}]
+                                                     (assoc x
+                                                            :http/status 200
+                                                            :http/reason "OK"
+                                                            :http/headers {:content-type content-type
+                                                                           :connection "keep-alive"}
+                                                            :http/body buf)))
+                                              (map (fn [{:keys [path]
+                                                         :as x}]
+                                                     (assoc x
+                                                            :http/status 404
+                                                            :http/reason "Not Found"
+                                                            :http/headers {:content-type "text/plain"
+                                                                           :connection "keep-alive"}
+                                                            :http/body (str "Not found: " path))))))
                            "/" (map (fn [{:app/keys [uuid]
                                           {:keys [x-appengine-city
                                                   x-appengine-country
@@ -906,45 +960,93 @@
                                                              x-appengine-region " / " x-appengine-country "."
                                                              " Your IP is " x-appengine-user-ip " and your trace is "
                                                              x-cloud-trace-context "."))))
-                           :default (map (fn [{:app/keys [uuid]
+                           :default (map (fn [{:keys [path]
                                                {:keys [host]} :headers
                                                :as x}]
                                            (assoc x
                                                   :http/status 404
-                                                  :http/reason "NOT FOUND"
+                                                  :http/reason "Not Found"
                                                   :http/headers {:content-type "text/plain"
                                                                  :connection "keep-alive"}
-                                                  :http/body "NOT FOUND")))})))
+                                                  :http/body (str "NOT FOUND " path " @ " host))))})))
                        writable-rf
-                       #_(rf/once-rf (fn [{:nio/keys [^SelectionKey selection-key] :as x}]
-                                       (writable! selection-key)
-                                       x))
                        (send-rf (comp
                                  response-rf))
-                       #_(rf/debug-rf ::send)
-                       (rf/once-rf (fn [{:nio/keys [^SelectionKey selection-key] :as x}]
-                                     (readable! selection-key)
-                                     x))))))))))
+                       readable-rf
+                       ;; remember request
+                       (rf/one-rf :http/request (map :http/request))
+                       (map (fn [{:http/keys [request]
+                                  {:keys [path]} :http/request
+                                  :as x}]
+                              (assoc x :path path)))
+                       ;; sink for websocket
+                       (rf/choose-rf :path {"/ws" (comp
+                                                   (receive-rf
+                                                    (comp
+                                                     jaq.http.xrf.websocket/decode-frame-rf
+                                                     jaq.http.xrf.websocket/decode-message-rf
+                                                     #_(map (fn [x]
+                                                            (assoc x
+                                                                   :ws/message "hello"
+                                                                   :ws/op :text)))
+                                                     (rf/repeatedly-rf
+                                                      (send-rf
+                                                       (comp
+                                                        jaq.http.xrf.websocket/encode-message-rf
+                                                        jaq.http.xrf.websocket/encode-frame-rf)))
+                                                     (fn [rf]
+                                                       (let [once (volatile! false)]
+                                                         (fn
+                                                           ([] (rf))
+                                                           ([acc] (rf acc))
+                                                           ([acc {:nio/keys [selection-key]
+                                                                  :context/keys [ws]
+                                                                  :ws/keys [message op frames]
+                                                                  :as x}]
+                                                            #_(prn ::frame frame)
+                                                            (prn ::message op)
+                                                            (vswap! ws conj {:op op
+                                                                             :frames frames})
+                                                            #_(vswap! ws conj frame)
+                                                            acc)))))))})))))))
+                 (rf/once-rf (fn [{:context/keys [shutdown]
+                                   :nio/keys [selector server-channel selection-key] :as x}]
+                               (vreset! shutdown (fn []
+                                                   (prn ::shutting ::down x)
+                                                   (doseq [sk (.keys selector)]
+                                                     (-> sk (.channel) (.close))
+                                                     (-> sk (.cancel)))
+                                                   (.wakeup selector)
+                                                   selector))
+                               x))))
                close-rf)))]
      (->> [{:context/bip-size (* 1 4096)
+            :context/ws (volatile! [])
             :http/host "localhost"
             :http/scheme :http
             :http/port 10010
             :http/minor 1 :http/major 1}]
           (into [] xf)))
    (def x (first *1))
+
    (-> x :context/shutdown! (apply []))
+   (-> x :context/ws (deref))
    (-> x :async/thread (.stop))
-   (def s *1)
-   (-> s (.keys))
-   (->> s (.keys) (map (fn [sk]
-                         (-> sk (.channel) (.close))
-                         (-> sk (.cancel)))) (doall))
-   (-> s .close)
+   (-> x :async/thread (.getState))
+   (-> x :nio/selector (.wakeup))
+   (-> x :nio/selector (.keys) count)
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x (read!))
+   (-> x :nio/selector (.keys) (first) (.attachment) :nio/in)
+   (->> x :nio/selector (.keys) (map (fn [sk]
+                                       (-> sk (.channel) (.close))
+                                       (-> sk (.cancel)))) (doall))
+   (-> x :nio/selector (.close))
+   read-op
    *e
    *ns*
 
    (in-ns 'jaq.http.xrf.nio)
+   (require 'jaq.http.xrf.websocket)
 
    (def x (first *1))
 
@@ -1116,88 +1218,7 @@
           (into [] xf)))
 
    ;; auth
-   (let [ssl-connection (comp ;; ssl connection
-                         ssl/ssl-rf
-                         valid-rf
-                         connect-rf
-                         read-rf
-                         write-rf
-                         ;; need to register for both writable/readable
-                         (rf/once-rf (fn [{:nio/keys [selection-key] :as x}]
-                                       (read-writable! selection-key)
-                                       x))
-                         (rf/debug-rf ::handshake)
-                         ssl/handshake-rf)
-         json-response (comp
-                        (rf/one-rf
-                         :http/response
-                         (comp
-                          (map (fn [{:keys [byte] :as x}]
-                                 (assoc x :char (char byte))))
-                          header/response-line
-                          header/headers))
-                        (map (fn [{{:keys [headers status]} :http/response
-                                   :as x}]
-                               (assoc x
-                                      :headers headers
-                                      :status status)))
-                        #_(rf/debug-rf ::response)
-                        http/chunked-rf
-                        http/text-rf
-                        body-rf)
-         close-connection (comp
-                           (map (fn [{:http/keys [chunks body json]
-                                      :nio/keys [^SelectionKey selection-key ^Selector selector]
-                                      :keys [headers]
-                                      :as x}]
-                                  ;; clean up channel
-                                  (prn ::cleanup selection-key)
-                                  (-> selection-key (.channel) (.close))
-                                  (.cancel selection-key)
-                                  (.wakeup selector)
-                                  x)))
-         auth-chan (comp
-                    auth/credentials-rf
-                    auth/refresh-rf ;; provides hostname
-                    (rf/branch (fn [{:oauth2/keys [expires-in]}]
-                                 (> (System/currentTimeMillis) expires-in))
-                               (channel-rf
-                                (comp
-                                 ssl-connection
-                                 (rf/debug-rf ::attachment)
-                                 ;; send ssl rf
-                                 (ssl/request-ssl-rf
-                                  http/http-rf)
-                                 ;; wait for response
-                                 (ssl/receive-ssl-rf
-                                  json-response)
-                                 ;; process response
-                                 (map (fn [{{:keys [expires-in]} :http/json
-                                            :as x}]
-                                        (if expires-in
-                                          (->> expires-in
-                                               (* 1000)
-                                               (+ (System/currentTimeMillis))
-                                               (assoc-in x [:http/json :expires-in]))
-                                          x)))
-                                 (map (fn [{:http/keys [json]
-                                            :context/keys [request]
-                                            :as x}]
-                                        (let [oauth2 (->> json
-                                                          (map (fn [[k v]]
-                                                                 [(keyword "oauth2" (name k)) v]))
-                                                          (into {}))]
-                                          (prn ::oauth2 oauth2)
-                                          (merge x oauth2))))
-                                 #_auth/store-rf
-                                 #_(rf/debug-rf ::done)
-                                 ;; clean up connection
-                                 close-connection))
-                               rf/identity-rf)
-                    (drop-while (fn [{:oauth2/keys [expires-in]}]
-                                  (> (System/currentTimeMillis) expires-in)))
-                    #_(rf/debug-rf ::authed))
-         xf (comp
+   (let [xf (comp
              selector-rf
              (x/time
               (thread-rf
@@ -1286,216 +1307,108 @@
          [{}])
 
    ;; appengine deploy
-   (let [selector (selector!)
-         xf (comp
-             (rf/branch (fn [{:oauth2/keys [expires-in]}]
-                          (> (System/currentTimeMillis) expires-in))
-                        auth-rf
-                        rf/identity-rf)
-             (comp
-              ;; connection
-              attachment-rf
-              channel-rf
-              ssl/ssl-rf
-              process-rf
-              ssl/handshake-rf
-              ;; rest
-              storage/list-objects-rf
-              storage/rest-service-rf
-              ;; request
-              #_connection-rf
-              http/http-rf
-              selector-rf
-              ssl/request-ssl-rf
-              (fn [rf]
-                (let [objects (volatile! [])
-                      add-items! (fn [items]
-                                   (vswap! objects into items))]
-                  (fn
-                    ([] (rf))
-                    ([acc] (rf acc))
-                    ([acc {:storage/keys [bucket]
-                           {:keys [nextPageToken items]} :http/json
-                           {:keys [location]} :headers
-                           :context/keys [parsed! done!]
-                           :as x}]
-                     (-> x
-                         (assoc :context/add-items! add-items!)
-                         (assoc :context/objects objects)
-                         (->> (rf acc)))))))
-              ;; parse json
-              (rf/once-rf
+   (let [xf (comp
+             selector-rf
+             (x/time
+              (thread-rf
                (comp
-                ssl/response-ssl-rf
-                header/response-line
-                header/headers
-                http/parsed-rf
-                http/chunked-rf
-                http/text-rf
-                body-rf
-                (fn [rf]
-                  (let [once (volatile! false)]
-                    (fn
-                      ([] (rf))
-                      ([acc] (rf acc))
-                      ([acc {:storage/keys [bucket]
-                             {:keys [nextPageToken items]} :http/json
-                             {:keys [location]} :headers
-                             :context/keys [parsed! done! add-items!]
-                             :as x}]
-                       (when-not @once
-                         (parsed!)
-                         (add-items! items)
-                         (vreset! once true))
-                       (-> x
-                           (dissoc :http/body)
-                           (dissoc :http/chunks)
-                           (assoc-in [:http/params :bucket] bucket)
-                           (assoc-in [:http/params :pageToken] nextPageToken)
-                           (->> (rf acc)))))))
-                (rf/branch (fn [{{:keys [nextPageToken]} :http/json}]
-                             nextPageToken)
-                           (comp
-                            http/http-rf
-                            ssl/request-ssl-rf)
-                           (fn [rf]
-                             (let [once (volatile! false)]
-                               (fn
-                                 ([] (rf))
-                                 ([acc] (rf acc))
-                                 ([acc {:storage/keys [objects bucket]
-                                        {:keys [nextPageToken items]} :http/json
-                                        {:keys [location]} :headers
-                                        :context/keys [parsed! done!]
-                                        :as x}]
-                                  (when-not @once
-                                    (done!)
-                                    (vreset! once true))
-                                  (rf acc x))))))))
-              (drop-while (fn [{{:keys [nextPageToken]} :http/json :as x}]
-                            nextPageToken))
-              (map (fn [{:nio/keys [selection-key] :as x}]
-                     (when (.isValid selection-key)
-                       (prn ::cancel ::selection-key)
-                       (.cancel selection-key))
-                     x))
-              (fn [rf]
-                (fn
-                  ([] (rf))
-                  ([acc] (rf acc))
-                  ([acc {:context/keys [objects]
-                         :appengine/keys [app service]
-                         :storage/keys [bucket]
-                         :as x}]
-                   (-> x
-                       (dissoc :http/params)
-                       (dissoc :http/headers)
-                       (dissoc :http/body)
-                       (dissoc :http/req)
-                       (dissoc :http/chunks)
-                       (dissoc :http/json)
-                       (assoc-in [:http/params :app] app)
-                       (assoc-in [:http/params :service] service)
-                       (assoc :storage/objects @objects)
-                       (assoc :http/host appengine/root-url)
-                       (->> (rf acc))))))
-              (comp
-               attachment-rf
-               channel-rf
-               ssl/ssl-rf
-               process-rf
-               ssl/handshake-rf)
-              ;; rest
-              appengine/version-rf
-              appengine/create-version-rf
-              appengine/rest-service-rf
-              ;; request
-              (comp
-               http/http-rf
-               ssl/request-ssl-rf
-               ssl/response-ssl-rf
-               header/response-line
-               header/headers
-               http/parsed-rf
-               http/chunked-rf
-               http/text-rf
-               body-rf)
-              (drop-while (fn [{{:keys [content-length]} :headers}]
-                            (> content-length 0)))
-              ;; operation
-              (rf/branch
-               (fn [{:keys [status] :as x}]
-                 (= status 200))
-               (comp
-                (fn [rf]
-                  (let [once (volatile! false)]
-                    (fn
-                      ([] (rf))
-                      ([acc] (rf acc))
-                      ([acc {{:keys [name]} :http/json
-                             :http/keys [req]
-                             :context/keys [parsed! done!]
-                             :as x}]
-                       (when-not @once
-                         #_(prn ::req req)
-                         (prn ::name name)
-                         (done!)
-                         (vreset! once true))
-                       (-> x
-                           (dissoc :http/body)
-                           (dissoc :http/chunks)
-                           (dissoc :rest/method)
-                           (dissoc :context/objects)
-                           (dissoc :storage/objects)
-                           (assoc :http/params {:name name})
-                           (->> (rf acc)))))))
-                appengine/operation-rf
-                appengine/rest-service-rf
-                http/http-rf
-                ssl/request-ssl-rf
-                ssl/response-ssl-rf
-                header/response-line
-                header/headers
-                http/parsed-rf
-                http/chunked-rf
-                http/text-rf
-                body-rf)
-               rf/identity-rf)
-              (map (fn [x]
-                     (-> x
-                         (dissoc :context/x)
-                         (dissoc :nio/attachment))))))
-         rf (xf (rf/result-fn))]
-     (rf nil
-         (merge
-          {:nio/selector selector
-           :context/bip-size (* 5 4096)
-           :storage/bucket "staging.alpeware-foo-bar.appspot.com"
-           ;;:storage/prefix "target/classes/jaq/async"
-           :storage/prefix "app/v3"
-           :appengine/id (str (System/currentTimeMillis))
-           :appengine/app "alpeware-foo-bar"
-           :appengine/service :default
-           :http/params {;;:prefix "target/classes/jaq/async"
-                         :prefix "app/v3"
-                         :bucket "staging.alpeware-foo-bar.appspot.com"}
-           :http/host storage/root
-           :http/scheme :https
-           :http/port 443
-           :http/minor 1 :http/major 1}
-          oauth2))
-     (let [step (partial reactor-main selector)
-           start (System/currentTimeMillis)
-           timeout (* 2 60 1000)
-           steps (fn []
-                   (if-let [r (rf)]
-                     (def x r)
-                     (when (< (System/currentTimeMillis) (+ start timeout))
-                       (step)
-                       (recur))))]
-       (steps)
-       #_step
-       #_{:rf rf :step step :steps steps}))
+                (select-rf
+                 (comp
+                  auth-chan
+                  (drop-while (fn [{:oauth2/keys [expires-in]}]
+                                (and (not expires-in)
+                                     (> (System/currentTimeMillis) expires-in))))
+                  (rf/one-rf :oauth2/access-token (comp
+                                                   (map :oauth2/access-token)))
+                  (map (fn [x]
+                         (-> x
+                             (dissoc :http/json :http/body :http/chunks :http/headers :ssl/engine)
+                             (assoc :http/params {:bucket "staging.alpeware-foo-bar.appspot.com"
+                                                  :prefix "app/v7"}
+                                    :http/host storage/root
+                                    :storage/prefix "app/v7"
+                                    :appengine/id (str (System/currentTimeMillis))
+                                    :appengine/app "alpeware-foo-bar"
+                                    :appengine/service :default
+                                    :storage/bucket "staging.alpeware-foo-bar.appspot.com"))))
+                  (channel-rf
+                   (comp
+                    ssl-connection
+                    (storage/pages-rf
+                     (comp
+                      storage/list-objects-rf
+                      storage/rest-service-rf
+                      (ssl/request-ssl-rf http/http-rf)
+                      (ssl/receive-ssl-rf json-response)))
+                    (map (fn [{:storage/keys [pages]
+                               {:keys [items]} :http/json
+                               :as x}]
+                           #_(prn ::pages pages)
+                           (prn ::items (count items))
+                           x))
+                    (drop-while (fn [{:storage/keys [pages]
+                                      {:keys [nextPageToken items]} :http/json
+                                      :as x}]
+                                  nextPageToken))
+                    (map (fn [{:storage/keys [pages]
+                               {:keys [items]} :http/json
+                               :as x}]
+                           (prn ::pages (count pages))
+                           x))
+                    close-connection))
+                  (drop-while (fn [{:storage/keys [pages] :as x}]
+                                (nil? pages)))
+                  ;; got list of files
+                  (fn [rf]
+                    (let [objects (volatile! nil)]
+                      (fn
+                        ([] (rf))
+                        ([acc] (rf acc))
+                        ([acc {:appengine/keys [app service]
+                               :storage/keys [pages bucket]
+                               :as x}]
+                         (when-not @objects
+                           (->> pages (mapcat :items) (vreset! objects)))
+                         (-> x
+                             (dissoc :http/params :http/headers :http/body
+                                     :http/req :http/chunks :http/json
+                                     :ssl/engine)
+                             (assoc-in [:http/params :app] app)
+                             (assoc-in [:http/params :service] service)
+                             (assoc :storage/objects @objects)
+                             (assoc :http/host appengine/root-url)
+                             (->> (rf acc)))))))
+                  ;; deploy rest
+                  (channel-rf
+                   (comp
+                    ssl-connection
+                    (comp
+                     appengine/version-rf
+                     appengine/create-version-rf
+                     appengine/rest-service-rf
+                     (ssl/request-ssl-rf http/http-rf)
+                     (ssl/receive-ssl-rf json-response))
+                    (map (fn [{:storage/keys [pages]
+                               {:keys [items] :as json} :http/json
+                               :as x}]
+                           (prn ::json json)
+                           x))
+                    close-connection))
+                  ;; operation
+                  ;; migrate
+                  ))
+                close-rf))))]
+     (->> [{:context/bip-size (* 10 4096)
+            :http/scheme :https
+            :http/port 443
+            :http/minor 1 :http/major 1}]
+          (into [] xf)))
+   (def x (first *1))
+   (in-ns 'jaq.http.xrf.nio)
+
+   (-> x :async/thread (.stop))
+
+   (->> p (mapcat :items) (first))
 
    (slurp "https://alpeware-foo-bar.appspot.com/")
    *ns*
@@ -1559,8 +1472,8 @@
                             (dissoc :http/json :http/body :http/chunks :http/headers :ssl/engine)
                             (assoc :http/params {:bucket "staging.alpeware-foo-bar.appspot.com"}
                                    :http/host storage/root
-                                   :file/prefix "v"
-                                   :file/dir "./scripts"
+                                   :file/prefix "app/v7"
+                                   :file/dir "./target"
                                    :storage/bucket "staging.alpeware-foo-bar.appspot.com"))))
                  (channel-rf
                   (comp
@@ -1624,7 +1537,7 @@
                                  path))
                    close-connection))))
                close-rf)))]
-     (->> [{:context/bip-size (* 5 4096)
+     (->> [{:context/bip-size (* 10 4096)
             :http/scheme :https
             :http/port 443
             :http/method :GET
@@ -1637,108 +1550,6 @@
 
    (in-ns 'jaq.http.xrf.nio)
    *ns*
-
-   ;; appengine
-   (let [selector (selector!)
-         xf (comp
-             (rf/branch (fn [{:oauth2/keys [expires-in]}]
-                          (> (System/currentTimeMillis) expires-in))
-                        auth-rf
-                        rf/identity-rf)
-             attachment-rf
-             channel-rf
-             ssl/ssl-rf
-             process-rf
-             ssl/handshake-rf
-             ;; app
-             ;;appengine/instance-rf
-             ;;appengine/list-instances-rf
-             appengine/list-versions-rf
-             appengine/rest-service-rf
-             http/http-rf
-             selector-rf
-             ssl/request-ssl-rf
-             ssl/response-ssl-rf
-             header/response-line
-             header/headers
-             http/parsed-rf
-             http/chunked-rf
-             http/text-rf
-             body-rf
-             (drop-while (fn [{{:keys [content-length]} :headers}]
-                           (> content-length 0)))
-             ;; services
-             #_(comp
-                (fn [rf]
-                  (let [once (volatile! false)]
-                    (fn
-                      ([] (rf))
-                      ([acc] (rf acc))
-                      ([acc {:appengine/keys [project]
-                             {:keys [id]} :http/json
-                             :http/keys [params]
-                             :keys [headers]
-                             :context/keys [parsed! done!]
-                             :as x}]
-                       (when-not @once
-                         (parsed!)
-                         (done!)
-                         (prn ::app id headers)
-                         (vreset! once true))
-                       (-> x
-                           (dissoc :http/body)
-                           (dissoc :http/chunks)
-                           (assoc-in [:http/params :app] id)
-                           (assoc-in [:http/params :version] "v4")
-                           (->> (rf acc)))))))
-                ;;appengine/list-versions-rf
-                ;;appengine/list-services-rf
-                appengine/list-instances-rf
-                appengine/rest-service-rf
-                http/http-rf
-                ssl/request-ssl-rf
-                ssl/response-ssl-rf
-                #_(map (fn [x] (prn x) x))
-                header/response-line
-                #_(map (fn [x] (prn x) x))
-                header/headers
-                http/parsed-rf
-                http/chunked-rf
-                http/text-rf
-                body-rf))
-         rf (xf (rf/result-fn))]
-     (rf nil
-         (merge
-          {:nio/selector selector
-           :context/bip-size (* 5 4096)
-           :appengine/project "alpeware-foo-bar"
-           ;;:http/params {:project "alpeware-foo-bar"}
-           :http/params {:app "alpeware-foo-bar"
-                         :service :default
-                         ;;:version "1585265219180"
-                         ;;:id "00c61b117c7ca8ed8affac64ee7356f65b0baf8bb4ab18810513f840a05a4ac30fc9e6c1ac50"
-                         }
-           :http/host appengine/root-url
-           :http/scheme :https
-           :http/port 443
-           :http/minor 1 :http/major 1}
-          oauth2))
-     (let [step (partial reactor-main selector)
-           start (System/currentTimeMillis)
-           timeout (* 5 1000)
-           steps (fn []
-                   (if-let [r (rf)]
-                     (def x r)
-                     (when (< (System/currentTimeMillis) (+ start timeout))
-                       (step)
-                       (recur))))]
-       (steps)
-       #_step
-       #_{:rf rf :step step :steps steps}))
-   (def x *1)
-   (-> x :http/json)
-
-   (->> x :http/json :versions (sort-by :createTime) (reverse) (first))
 
    *e
    *ns*

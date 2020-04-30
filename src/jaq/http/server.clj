@@ -25,21 +25,24 @@
   (nio/serve port xrf))
 
 (def repl-xf
-  (comp
-   (server/server-rf server/repl-rf)))
+  server/repl-rf
+  #_(comp
+   (server/server-rf
+    server/repl-rf)))
 
 (defn -main [& args]
   (register!)
   (def s
-    #_(->> [{:context/bip-size (* 1 4096)
+    (->> [{:context/bip-size (* 1 4096)
            :http/port (or
                        (some-> env :PORT (Integer/parseInt))
                        3000)
            :http/host "localhost"
            :http/scheme :http
            :http/minor 1 :http/major 1}]
-         (into [] repl-xf)))
-  (->> (or
+         (into [] repl-xf)
+         (first)))
+  #_(->> (or
         (some-> env :PORT (Integer/parseInt))
         3000)
        (serve app/repl)))
@@ -47,7 +50,7 @@
 #_(
    *ns*
    (in-ns 'jaq.http.server)
-   jaq.http.server.nio/*http-server*
+   s
    *e
    (do
      (-> s (first) :async/stop! (apply []))

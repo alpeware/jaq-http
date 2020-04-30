@@ -141,6 +141,39 @@
 
    *e)
 
+(defn pages-rf [xf]
+  (fn [rf]
+    (let [done (volatile! nil)
+          results (volatile! [])
+          page-token (volatile! nil)
+          xfr (volatile! (xf (rf/result-fn)))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {{:keys [bucket] :as params} :http/params
+               :as x}]
+         (if @done
+           (rf acc (assoc x :storage/pages @results))
+           (do
+             (if @page-token
+               (@xfr acc (assoc-in x [:http/params :pageToken] @page-token))
+               (@xfr acc x))
+             (if-let [{{:keys [nextPageToken items] :as json} :http/json
+                       :as xr} (@xfr)]
+               (do
+                 #_(prn ::result items)
+                 (vswap! results conj json)
+                 (vreset! page-token nextPageToken)
+                 (vreset! xfr (xf (rf/result-fn)))
+                 (when-not nextPageToken
+                   (vreset! done true))
+                 (rf acc (assoc xr :storage/pages @results)))
+               acc))))))))
+
+#_(
+   (in-ns 'jaq.gcp.storage)
+   )
+
 #_(defn objects [bucket & [{:keys [prefix pageToken maxResults] :as params}]]
     (lazy-seq
      (let [{:keys [items nextPageToken error]} (action :get
@@ -284,29 +317,9 @@
            (vreset! once true))
          (rf acc x))))))
 
-#_(def files-rf
-  (fn [rf]
-    (let [fs (volatile! nil)
-          f (volatile! nil)
-          next! (fn []
-                  (vreset! f (first @fs))
-                  (vswap! fs rest))]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:file/keys [dir]
-               :as x}]
-         (when-not @fs
-           (->> dir
-                (io/file)
-                (file-seq)
-                (filter (fn [e] (.isFile e)))
-                (vreset! fs))
-           (next!))
-         (->> (assoc x
-                     :context/next! next!
-                     :file/path (some-> @f (.getPath)))
-              (rf acc)))))))
+#_(
+
+   )
 
 (defn files-rf [xf]
   (fn [rf]
@@ -339,7 +352,7 @@
              (if-let [xr (@xrf)]
                (do
                  (next!)
-                 (when (empty? @fs)
+                 (when-not @f
                    (vreset! done true))
                  (rf acc xr))
                acc))))))))
@@ -347,12 +360,9 @@
 #_(
    (in-ns 'jaq.gcp.storage)
    (into [] (comp
-             files-rf
-             (map (fn [{:context/keys [next!] :as x}]
-                    (next!)
-                    x))
-             file-rf
-             #_(map :file/path)
+             (files-rf
+              file-rf)
+             (map :file/path)
              (take 6))
          (repeat {:file/dir "./scripts"}))
 
@@ -369,6 +379,12 @@
           (vreset! fs))
      [(f) (f)]
      )
+
+   (->> "/opt/cprof"
+        (io/file)
+        (file-seq)
+        (filter (fn [e] (.isFile e)))
+        )
    )
 
 #_(
