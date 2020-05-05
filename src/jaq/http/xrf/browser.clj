@@ -358,9 +358,10 @@
                                        ((juxt :requires :require-macros)
                                         (ana/get-namespace ana/*cljs-ns*)))]
                         (try
-                          (read-string input)
+                          (read-string {:read-cond :allow :features #{:cljs}} input)
                           (catch Throwable e
-                            (throw (ex-info nil {:clojure.error/phase :read-source} e)))))]
+                            #_(throw (ex-info nil {:clojure.error/phase :read-source} e))
+                            (prn (ex-info nil {:clojure.error/phase :read-source} e)))))]
              (try
                (if (and (seq? form) (is-special-fn? (first input)))
                  (do
@@ -410,6 +411,8 @@
                        :repl/cljs-ns cljs-ns)
                 (rf acc))))))))
 
+;; TODO: implement special fns
+
 #_(
    (into [] compile-rf [{:repl/input "(range 10)"}])
 
@@ -429,11 +432,42 @@
    (into [] (comp
              (map (fn [x] {:repl/input (str x)}))
              env-rf
+             compile-rf
+             (map (fn [x] (select-keys x [:repl/js :repl/cljs-ns]))))
+         ['(pr-str (read-string {:read-cond :allow} "#?(:clj :clj :cljs :cljs)"))])
+
+   (pr-str (read-string {:read-cond :allow} "#?(:clj :clj :cljs :cljs)"))
+
+   (pr-str (cljs.reader/read-string {:read-cond :allow} "#?(:clj :clj :cljs :cljs)"))
+
+   (cljs.reader/read-string {:read-cond :preserve} "#?(:clj :clj :cljs :cljs)")
+
+   (read-string {:read-cond :preserve} "#?(:clj :clj :cljs :cljs)")
+   (read-string {:read-cond :allow} "#?(:clj :clj :cljs :cljs)")
+   (read-string {:read-cond :allow :features #{:cljs}} "#?(:cljs :cljs)")
+   (read-string {:read-cond :allow :features #{:cljs}} "#?(:cljs :cljs :clj :clj :default :default)")
+   (read-string {:read-cond :allow :features #{:cljs}} "#?(:clj :clj :cljs :cljs :default :default)")
+
+   (cljs.reader/read-string "(+ 1 1)")
+
+   (pr-str #?(:clj :clj :cljs :cljs))
+
+   (require 'cljs.core)
+   (require 'cljs.reader)
+
+   (defmacro if-cljs [then else]
+     (if (:ns &env) then else))
+
+   (if-cljs true false)
+
+   (into [] (comp
+             (map (fn [x] {:repl/input (str x)}))
+             env-rf
              compile-rf)
          ['(ns cljs.user (:require [cljs.core]
                                    [cljs.repl :refer-macros [source doc find-doc apropos dir pst]]
                                    [cljs.pprint :refer [pprint] :refer-macros [pp]]))
-          '(ns foo.bar)
+          ;;'(ns foo.bar)
           '(range 10)])
 
    @cljs-ns
@@ -471,25 +505,6 @@
          {:keys [compile compiler-env opts]} e]
      (compile compiler-env opts (str input)))
 
-   (let [input '*ns*
-         {:keys [compile compiler-env opts]} e]
-     (compile compiler-env opts (str input)))
-
-   (defn eval-cljs [input]
-     (let [{:keys [compile compiler-env opts]} e]
-       (compile compiler-env opts (str input))))
-
-   (eval-cljs '(range 10))
-   (eval-cljs '(in-ns 'cljs.user))
-   (eval-cljs '(load-namespace 'goog.date.Date))
-   (eval-cljs '(goog.date.Date.))
-   (eval-cljs '(load-file "clojure/string.cljs"))
-   (eval-cljs '(clojure.string/reverse "ClojureScript"))
-   (eval-cljs '(ns foo.bar))
-   (eval-cljs '(ns test.dom (:require [clojure.browser.dom :as dom])))
-   (eval-cljs '(dom/append (dom/get-element "content")
-                           (dom/element "ClojureScript is all up in your DOM.")))
-
    *ns*
    *e
    (+ 1 1)
@@ -520,5 +535,12 @@
                  :output-dir "out"
                  ;;:output-to "out/hello.js"
                  :source-map true}
+                cenv)
+
+   (cljsc/build "src"
+                {:optimizations :advanced #_:simple #_:none
+                 :output-dir "out"
+                 :output-to "out/app.js"
+                 :source-map false}
                 cenv)
    )

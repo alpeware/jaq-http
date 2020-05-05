@@ -15,4 +15,5 @@ pom.xml.asc
 .nrepl-port
 .cpcache/
 .m2/
+out/
 Makefile

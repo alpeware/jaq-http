@@ -99,8 +99,49 @@
                  (rf acc (assoc x k x')))
                acc))))))))
 
+(defn catch-rf [e f xf]
+  (fn [rf]
+    (let [xrf (xf (result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (let [x' (try
+                    (xrf nil x)
+                    (catch Exception ex
+                      ex))]
+           (cond
+             (instance? e x')
+             (rf acc (f x))
+
+             (instance? Exception x')
+             (throw x')
+
+             (xrf)
+             (rf acc (xrf))
+
+             :else
+             acc)))))))
+
 #_(
    (in-ns 'jaq.http.xrf.rf)
+   *e
+
+   (into []
+         (catch-rf
+          ArithmeticException
+          (fn [x] (assoc x :c :nan))
+          (comp
+           (map (fn [{:keys [a b] :as x}]
+                  (assoc x :c (/ a b))))))
+         [{:a 4 :b 0} {:a 3 :b 1}])
+
+
+   (let [e ArithmeticException]
+     (try (/ 9 0)
+          (catch Exception ex
+            (throw ex)
+            #_(instance? e ex))))
    )
 
 (defn choose-rf [pred xfs]

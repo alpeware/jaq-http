@@ -17,7 +17,9 @@
    [jaq.http.xrf.websocket :as websocket]
    [jaq.http.xrf.browser :as browser]
    [jaq.repl :as r]
-   [net.cgrand.xforms :as x]))
+   [net.cgrand.xforms :as x])
+  (:import
+   [java.nio.file NoSuchFileException]))
 
 (declare root)
 
@@ -143,11 +145,15 @@
                  "/out" (comp
                          (map (fn [{:keys [path] :as x}]
                                 (assoc x :file/path (str "." path))))
-                         storage/file-rf
-                         storage/open-rf
-                         storage/read-rf
-                         storage/flip-rf
-                         storage/close-rf
+                         (rf/catch-rf
+                          NoSuchFileException
+                          (fn [x] (assoc x :file/size 0))
+                          (comp
+                           storage/file-rf
+                           storage/open-rf
+                           storage/read-rf
+                           storage/flip-rf
+                           storage/close-rf))
                          (rf/branch (fn [{:file/keys [size]}]
                                       (some-> size (> 0)))
                                     (map (fn [{:keys [path]
@@ -378,6 +384,45 @@
            (map (fn [x] (prn ::repeatedly) x))))))))
      nio/close-rf))))
 
+
+#_(
+
+   (into []
+         (comp
+          (map (fn [{:keys [path] :as x}]
+                 (assoc x :file/path (str "." path))))
+          (rf/catch-rf
+           NoSuchFileException
+           (fn [x] (assoc x :file/size 0))
+           (comp
+            storage/file-rf
+            storage/open-rf
+            storage/read-rf
+            storage/flip-rf
+            storage/close-rf))
+          (rf/branch (fn [{:file/keys [size]}]
+                       (some-> size (> 0)))
+                     (map (fn [{:keys [path]
+                                :file/keys [^ByteBuffer buf content-type]
+                                :as x}]
+                            (assoc x
+                                   :http/status 200
+                                   :http/reason "OK"
+                                   :http/headers {:content-type content-type
+                                                  :connection "keep-alive"}
+                                   :http/body buf)))
+                     (map (fn [{:keys [path]
+                                :as x}]
+                            (assoc x
+                                   :http/status 404
+                                   :http/reason "Not Found"
+                                   :http/headers {:content-type "text/plain"
+                                                  :connection "keep-alive"}
+                                   :http/body (str "Not found: " path))))))
+         [{:path "/out/goog/base.js"}])
+
+
+   )
 (defn root [{:keys [headers]
              {:keys [x-appengine-city
                      x-appengine-country
