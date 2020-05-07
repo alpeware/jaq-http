@@ -362,6 +362,7 @@
                           (catch Throwable e
                             #_(throw (ex-info nil {:clojure.error/phase :read-source} e))
                             (prn (ex-info nil {:clojure.error/phase :read-source} e)))))]
+             (prn ::form form)
              (try
                (if (and (seq? form) (is-special-fn? (first input)))
                  (do
@@ -449,8 +450,6 @@
    (read-string {:read-cond :allow :features #{:cljs}} "#?(:clj :clj :cljs :cljs :default :default)")
 
    (cljs.reader/read-string "(+ 1 1)")
-
-   (pr-str #?(:clj :clj :cljs :cljs))
 
    (require 'cljs.core)
    (require 'cljs.reader)

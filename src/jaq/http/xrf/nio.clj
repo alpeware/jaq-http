@@ -32,6 +32,10 @@
    [java.util.concurrent ConcurrentLinkedDeque]
    [java.util Set]))
 
+#_(
+   (in-ns 'jaq.http.xrf.nio)
+   )
+
 (def read-op SelectionKey/OP_READ)
 (def write-op SelectionKey/OP_WRITE)
 
@@ -276,6 +280,41 @@
    )
 
 (defn receive-rf [xf]
+  (fn [rf]
+    (let [once (volatile! false)
+          result (volatile! nil)
+          xrf (xf (rf/result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               :nio/keys [selection-key]
+               {:keys [reserve commit block decommit]} :nio/in
+               :as x}]
+         (if-not @once
+           (let [bb (block)]
+             (if-not (.hasRemaining bb)
+               (do ;; need more data
+                 (readable! selection-key)
+                 acc)
+               (do
+                 (loop []
+                   (->> (assoc x :byte (.get bb))
+                        (xrf acc))
+                   (when (and (.hasRemaining bb) (not (xrf)))
+                     (recur)))
+                 (prn bb)
+                 (decommit bb)
+                 (if-let [xr (xrf)]
+                   (do
+                     #_(prn ::receive ::result)
+                     (vreset! once true)
+                     (vreset! result xr)
+                     (rf acc xr))
+                   (recur acc x)))))
+           (rf acc x)))))))
+
+#_(defn receive-rf [xf]
   (fn [rf]
     (let [once (volatile! false)
           result (volatile! nil)
@@ -1635,4 +1674,6 @@
 
    (in-ns 'clojure.core)
    (in-ns 'jaq.http.xrf.nio)
-   (require 'jaq.http.xrf.nio :reload))
+   (require 'jaq.http.xrf.nio :reload)
+
+   )
