@@ -21,10 +21,12 @@
    [java.nio.channels.spi AbstractSelectableChannel]
    [java.nio.channels
     CancelledKeyException ClosedChannelException
-    ServerSocketChannel Selector SelectionKey SocketChannel SelectableChannel]
+    ServerSocketChannel Selector SelectionKey SocketChannel SelectableChannel
+    DatagramChannel ByteChannel]
    [java.nio.charset Charset]
    [java.nio ByteBuffer ByteOrder CharBuffer]
-   [java.net InetSocketAddress ServerSocket Socket SocketAddress InetSocketAddress]
+   [java.net InetSocketAddress ServerSocket Socket SocketAddress
+    InetSocketAddress DatagramPacket]
    [javax.net.ssl
     SNIHostName SNIServerName
     SSLEngine SSLEngineResult SSLEngineResult$HandshakeStatus SSLEngineResult$Status
@@ -39,8 +41,11 @@
 (def read-op SelectionKey/OP_READ)
 (def write-op SelectionKey/OP_WRITE)
 
-(defn address [^String host ^Integer port]
-  (InetSocketAddress. host port))
+(defn address
+  ([^Integer port]
+   (InetSocketAddress. port))
+  ([^String host ^Integer port]
+   (InetSocketAddress. host port)))
 
 (defn non-blocking [^AbstractSelectableChannel channel]
   (.configureBlocking channel false))
@@ -48,10 +53,11 @@
 (defn ^SocketChannel channel! [^SocketAddress socket-address]
   (SocketChannel/open socket-address))
 
+(defn ^SocketChannel datagram-channel! []
+  (DatagramChannel/open))
+
 (defn ^ServerSocketChannel server-channel! []
-  (ServerSocketChannel/open)
-  #_(-> (ServerSocketChannel/open)
-        (non-blocking)))
+  (ServerSocketChannel/open))
 
 (defn ^ServerSocket socket [^ServerSocketChannel ssc]
   (.socket ssc)
@@ -75,7 +81,7 @@
 (defn select! [^Selector selector]
   (.select selector))
 
-(defn register! [^Selector selector attachment ^SocketChannel channel]
+(defn register! [^Selector selector attachment ^SelectableChannel channel]
   (.register channel
              selector
              (bit-or SelectionKey/OP_CONNECT #_SelectionKey/OP_WRITE SelectionKey/OP_READ)
@@ -115,16 +121,28 @@
 (defn connect! [^SelectionKey sk]
   (-> sk ^SocketChannel (.channel) (.finishConnect)))
 
-(defn write-channel [^SocketChannel channel ^ByteBuffer bytes]
+(defn datagram-register! [^Selector selector attachment ^SelectableChannel channel]
+  (.register channel
+             selector
+             SelectionKey/OP_READ
+             attachment))
+
+(defn datagram-connect! [^SocketAddress address ^DatagramChannel channel]
+  (.connect channel address))
+
+(defn datagram-bind! [address ^DatagramChannel channel]
+  (.bind channel address))
+
+(defn write-channel [^ByteChannel channel ^ByteBuffer bytes]
   (.write channel bytes))
 
-(defn read-channel [^SocketChannel channel ^ByteBuffer buf]
+(defn read-channel [^ByteChannel channel ^ByteBuffer buf]
   (.read channel buf))
 
 (defn read! [{{:keys [reserve commit block decommit]} :nio/in
               :nio/keys [^SelectionKey selection-key]
               :as x}]
-  (let [^SocketChannel channel (.channel selection-key)]
+  (let [^ByteChannel channel (.channel selection-key)]
     (let [bb (reserve)
           n (->> bb
                  (read-channel channel))]
@@ -143,10 +161,57 @@
                (commit))))
       n)))
 
+(defn receive-datagram-channel [^DatagramChannel channel ^ByteBuffer buf]
+  (.receive channel buf))
+
+(defn datagram-receive! [{{:keys [reserve commit block decommit]} :nio/in
+                          :nio/keys [^SelectionKey selection-key]
+                          :as x}]
+  (let [^DatagramChannel channel (.channel selection-key)]
+    (let [bb (reserve)
+          socket-address (->> bb
+                              (receive-datagram-channel channel))]
+      (cond
+        (nil? socket-address) ;; end of stream?
+        (do
+          (prn ::eos selection-key)
+          (.interestOps selection-key 0)
+          (.cancel selection-key))
+
+        socket-address ;; read some bytes
+        (do
+          (prn ::received socket-address)
+          (->> bb
+               (.flip)
+               (commit))))
+      socket-address)))
+
+(defn send-datagram-channel [^DatagramChannel channel ^SocketAddress target ^ByteBuffer bytes]
+  (.send channel bytes target))
+
+(defn datagram-send! [{{:keys [reserve commit block decommit]} :nio/out
+                       :nio/keys [^SelectionKey selection-key]
+                       :http/keys [host port]
+                       :as x}]
+  (let [^DatagramChannel channel (.channel selection-key)
+        target (address host port)]
+    (let [bb (block)]
+      (when (.hasRemaining bb)
+        (send-datagram-channel channel target bb)
+        (prn ::wrote (.position bb) ::to target)
+        (decommit bb))
+      (.position bb))))
+
+#_(
+   *e
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x (read!))
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x :nio/selection-key)
+   )
+
 (defn write! [{{:keys [reserve commit block decommit]} :nio/out
                :nio/keys [^SelectionKey selection-key]
                :as x}]
-  (let [^SocketChannel channel (.channel selection-key)]
+  (let [^ByteChannel channel (.channel selection-key)]
     (let [bb (block)]
       (when (.hasRemaining bb)
         (write-channel channel bb)
@@ -272,6 +337,67 @@
                    (rf acc x))
                  acc)))))))))
 
+(defn datagram-send-rf [xf]
+  (fn [rf]
+    (let [once (volatile! false)
+          request (volatile! nil)
+          requests (volatile! nil)
+          xrf (xf (rf/result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [req]
+               :nio/keys [^SelectionKey selection-key]
+               {:keys [reserve commit block decommit]} :nio/out
+               :as x}]
+         (if @once
+           (rf acc x)
+           (do
+             (when-not @requests
+               (xrf acc x)
+               (when-let [{:http/keys [req] :as xr} (xrf)]
+                 (->> req
+                      (map (fn [e]
+                             (cond
+                               (string? e)
+                               (-> (.getBytes e)
+                                   (ByteBuffer/wrap))
+
+                               (instance? ByteBuffer e)
+                               e)))
+                      (vreset! requests))))
+             (when (and @request (not (.hasRemaining @request)))
+               (vreset! request nil))
+             (when (and (seq @requests) (not @request))
+               (->> @requests
+                    (first)
+                    (vreset! request))
+               (vswap! requests rest))
+             (if (and @request (.hasRemaining @request))
+               (let [dst (reserve)
+                     limit (min (.remaining @request) (.remaining dst))
+                     src (-> @request (.duplicate) #_(.limit limit))
+                     pos (-> @request (.position))]
+                 (->> src (.position) (+ limit) (.limit src))
+                 (->> limit (+ pos) (.position @request))
+                 (.put dst src)
+                 (.flip dst)
+                 (commit dst)
+                 (let [written (datagram-send! x)]
+                   (prn ::written written)
+                   (if-not (> written 0)
+                     (do
+                       ;; socket buffer full so waiting to clear
+                       (writable! selection-key)
+                       acc)
+                     (do
+                       (recur acc x)))))
+               (if (empty? @requests)
+                 (do
+                   (vreset! once true)
+                   (rf acc x))
+                 acc)))))))))
+
 #_(
    (in-ns 'jaq.http.xrf.nio)
    *ns*
@@ -314,7 +440,7 @@
                    (recur acc x)))))
            (rf acc x)))))))
 
-#_(defn receive-rf [xf]
+(defn datagram-receive-rf [xf]
   (fn [rf]
     (let [once (volatile! false)
           result (volatile! nil)
@@ -333,15 +459,12 @@
                  (readable! selection-key)
                  acc)
                (do
-                 (->> bb
-                      (.limit)
-                      (range)
-                      (map (fn [_]
-                             (let [b (-> bb (.get))]
-                               (->> (assoc x
-                                           :byte b)
-                                    (xrf acc)))))
-                      (doall))
+                 (loop []
+                   (->> (assoc x :byte (.get bb))
+                        (xrf acc))
+                   (when (and (.hasRemaining bb) (not (xrf)))
+                     (recur)))
+                 (prn bb)
                  (decommit bb)
                  (if-let [xr (xrf)]
                    (do
@@ -352,9 +475,6 @@
                    (recur acc x)))))
            (rf acc x)))))))
 
-#_(
-   *e
-   )
 (def request-rf
   (fn [rf]
     (let [once (volatile! false)]
@@ -383,38 +503,6 @@
              (rf acc)
              (rf acc x))))))))
 
-#_(def response-rf
-  (fn [rf]
-    (let [once (volatile! false)
-          parsed (volatile! false)
-          parsed! (fn []
-                    (vswap! parsed not))]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc {:http/keys [req]
-               {:keys [reserve commit block decommit]} :nio/in
-               :as x}]
-         (let [bb (block)]
-           (when (.hasRemaining bb)
-             (->> bb
-                  (.limit)
-                  (range)
-                  (map (fn [_]
-                         (let [b (-> bb (.get))]
-                           (if @parsed
-                             (->> (assoc x
-                                         :context/parsed! parsed!
-                                         :byte b)
-                                  (rf acc))
-                             (->> (assoc x
-                                         :context/parsed! parsed!
-                                         :char (char b))
-                                  (rf acc))))))
-                  (doall))
-             (decommit bb))
-           (rf acc)))))))
-
 (def read-rf
   (fn [rf]
     (fn
@@ -424,6 +512,28 @@
        (when (and (.isValid selection-key)
                   (.isReadable selection-key))
          (read! x))
+       (rf acc x)))))
+
+(def datagram-read-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
+       (when (and (.isValid selection-key)
+                  (.isReadable selection-key))
+         (datagram-receive! x))
+       (rf acc x)))))
+
+(def datagram-write-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
+       (when (and (.isValid selection-key)
+                  (.isWritable selection-key))
+         (datagram-send! x))
        (rf acc x)))))
 
 (def write-rf
@@ -505,6 +615,123 @@
                      :nio/selection-key ^SelectionKey @selection-key)
               (rf acc)))))))
 
+(defn datagram-channel-rf [xf]
+  (fn [rf]
+    (let [channel (volatile! nil)
+          selection-key (volatile! nil)
+          continuation-rf (fn [parent-rf]
+                            (fn [rf]
+                              (fn
+                                ([] (rf))
+                                ([acc] (rf acc))
+                                ([acc x]
+                                 (parent-rf acc x)))))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port local-port local-host]
+               :nio/keys [selector attachment]
+               :as x}]
+         (when-not @channel
+           (->> (datagram-channel!)
+                (non-blocking)
+                (datagram-bind! (address local-port))
+                (vreset! channel)
+                #_(datagram-connect! (address host port))
+                (datagram-register! selector
+                                    (assoc x ;;attachment
+                                           :context/x (assoc x
+                                                             :nio/in (->> [x] (into [] (comp
+                                                                                        bip/bip-rf
+                                                                                        (map :context/bip))) (first))
+                                                             :nio/out (->> [x] (into [] (comp
+                                                                                         bip/bip-rf
+                                                                                         (map :context/bip))) (first)))
+                                           ;;:context/rf (xf (rf/result-fn))
+                                           :context/rf ((comp
+                                                         xf
+                                                         (continuation-rf rf))
+                                                        (rf/result-fn))))
+                (writable!)
+                (vreset! selection-key))
+           (-> @selection-key
+               ;; TODO: fix
+               (.attachment)
+               (assoc-in [:context/x :nio/selection-key] @selection-key)
+               (->> (.attach @selection-key))))
+         (->> (assoc x
+                     :nio/channel @channel
+                     :nio/selection-key ^SelectionKey @selection-key)
+              (rf acc)))))))
+
+(defn datagram-bind-rf [xf]
+  (fn [rf]
+    (let [channel (volatile! nil)
+          selection-key (volatile! nil)
+          continuation-rf (fn [parent-rf]
+                            (fn [rf]
+                              (fn
+                                ([] (rf))
+                                ([acc] (rf acc))
+                                ([acc x]
+                                 (parent-rf acc x)))))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port local-port local-host]
+               :nio/keys [selector attachment]
+               :as x}]
+         (when-not @channel
+           (->> (datagram-channel!)
+                (non-blocking)
+                (datagram-bind! (address local-port))
+                (vreset! channel)
+                (datagram-connect! (address local-port))
+                (datagram-register! selector
+                                    (assoc x ;;attachment
+                                           :context/x (assoc x
+                                                             :nio/in (->> [x] (into [] (comp
+                                                                                        bip/bip-rf
+                                                                                        (map :context/bip))) (first))
+                                                             :nio/out (->> [x] (into [] (comp
+                                                                                         bip/bip-rf
+                                                                                         (map :context/bip))) (first)))
+                                           ;;:context/rf (xf (rf/result-fn))
+                                           :context/rf ((comp
+                                                         xf
+                                                         (continuation-rf rf))
+                                                        (rf/result-fn))))
+                (readable!)
+                (vreset! selection-key))
+           (-> @selection-key
+               ;; TODO: fix
+               (.attachment)
+               (assoc-in [:context/x :nio/selection-key] @selection-key)
+               (->> (.attach @selection-key))))
+         (->> (assoc x
+                     :nio/channel @channel
+                     :nio/selection-key ^SelectionKey @selection-key)
+              (rf acc)))))))
+
+#_(
+
+   (let [host "239.255.255.250"
+         port 1900
+         selector (selector!)]
+     (into []
+           (comp
+            selector-rf
+            (datagram-channel-rf
+             (comp
+              read-rf
+              write-rf)))
+           [{:context/bip-size (* 1 4096)
+             :http/host host
+             :http/port port}]))
+
+   *e
+
+   )
 (defn accept-rf [xf]
   (fn [rf]
     (fn
@@ -861,6 +1088,13 @@
         (enumeration-seq)
         (map (fn [e] [(.getDisplayName e) (.getMTU e)])))
 
+   (->> (java.net.NetworkInterface/getNetworkInterfaces)
+        (enumeration-seq)
+        (map (fn [e]
+               (->> (.getInetAddresses e)
+                    (enumeration-seq)
+                    (map (fn [f] (.getHostAddress f)))))))
+
    ;; repl server
    (let [xf (comp
              selector-rf
@@ -913,7 +1147,7 @@
                          (rf/choose-rf
                           (fn [{:keys [path]}]
                             (str "/"
-                             (some-> path (string/split #"/") (second))))
+                                 (some-> path (string/split #"/") (second))))
                           {"/repl" (comp
                                     (map (fn [{:keys [byte] :as x}]
                                            (assoc x :char (char byte))))
@@ -1025,9 +1259,9 @@
                                                      jaq.http.xrf.websocket/decode-frame-rf
                                                      jaq.http.xrf.websocket/decode-message-rf
                                                      #_(map (fn [x]
-                                                            (assoc x
-                                                                   :ws/message "hello"
-                                                                   :ws/op :text)))
+                                                              (assoc x
+                                                                     :ws/message "hello"
+                                                                     :ws/op :text)))
                                                      (rf/repeatedly-rf
                                                       (send-rf
                                                        (comp
@@ -1447,9 +1681,6 @@
 
    (-> x :async/thread (.stop))
 
-   (->> p (mapcat :items) (first))
-
-   (slurp "https://alpeware-foo-bar.appspot.com/")
    *ns*
    *e
    (def x *1)
@@ -1589,6 +1820,293 @@
 
    (in-ns 'jaq.http.xrf.nio)
    *ns*
+
+   ;; uPnP
+   (let [host "239.255.255.250"
+         port 1900
+         types [
+                ;;"urn:schemas-upnp-org:device:InternetGatewayDevice:1"
+                ;;"urn:schemas-upnp-org:service:WANIPConnection:1"
+                ;;"urn:schemas-upnp-org:service:WANPPPConnection:1"
+                "ssdp:all"
+                ;;"upnp:rootdevice"
+                ]
+         search (->> types
+                     (map (fn [e]
+                            (str "M-SEARCH * HTTP/1.1\r\n"
+                                 "HOST: " host ":" port "\r\n"
+                                 "ST: " e "\r\n"
+                                 "MAN: \"ssdp:discover\"\r\n"
+                                 "USER-AGENT: alpeware\r\n"
+                                 "MX: 2\r\n\r\n"))))
+         xf (comp
+             selector-rf
+             (thread-rf
+              (comp
+               (select-rf
+                (comp
+                 (datagram-channel-rf
+                  (comp
+                   datagram-read-rf
+                   datagram-write-rf
+                   (datagram-send-rf (comp
+                                      (map
+                                       (fn [{:http/keys [host port] :as x}]
+                                         (assoc x :http/req search)))))
+                   (rf/debug-rf ::sent)
+                   (rf/repeatedly-rf
+                    (datagram-receive-rf (comp
+                                          (map (fn [{:keys [byte] :as x}]
+                                                 (assoc x :char (char byte))))
+                                          header/response-line
+                                          header/headers
+                                          #_(map (fn [{:keys [headers char] :as x}]
+                                                   (prn char headers)
+                                                   x))
+                                          (take 1)
+                                          (map (fn [{:context/keys [devices]
+                                                     :keys [headers char]
+                                                     {:keys [location usn st]} :headers
+                                                     :as x}]
+                                                 (vswap! devices conj headers)
+                                                 (prn st usn location)
+                                                 x))
+                                          #_(drop-while (fn [{:keys [char]}]
+                                                          true
+                                                          #_(not= char \n)))
+                                          #_(fn [rf]
+                                              (let [val (volatile! nil)
+                                                    vacc (volatile! nil)]
+                                                (fn
+                                                  ([] (rf))
+                                                  ([acc] (rf acc))
+                                                  ([acc {:keys [char] :as x}]
+                                                   (vswap! vacc conj char)
+                                                   (cond
+                                                     @val
+                                                     (->> (assoc x :upnp/gateway @val)
+                                                          (rf acc))
+
+                                                     (not= char \n)
+                                                     (do
+                                                       (vswap! vacc conj char)
+                                                       acc)))))))))))))
+               close-rf)))]
+     (->> [{:context/bip-size (* 1 4096)
+            :context/devices (volatile! nil)
+            :http/host host
+            :http/port port
+            :http/local-port port
+            ;;:http/local-host "192.168.1.140"
+            ;;:http/local-host "172.17.0.2"
+            }]
+          (into [] xf)))
+   (def x (first *1))
+   *1
+
+   (->> x :nio/selector (.keys) (map (fn [e]
+                                       (-> e (.channel) (.close))
+                                       (.cancel e))))
+   (-> x :nio/selector (.wakeup))
+
+   (require 'clojure.pprint)
+   (->> x :context/devices (deref) (clojure.pprint/pprint))
+
+   (->> x :context/devices (deref))
+   (->> x :context/devices (deref) (map :usn) (set))
+   (->> x :context/devices (deref) (map :st) (set))
+   (->> x :context/devices (deref) (map :location) (set))
+   *e
+   (-> x :async/thread (.stop))
+   (-> x :async/thread (.getState))
+   (-> x :nio/selector (.close))
+
+   (let [locations (->> x :context/devices (deref) (map :location) (set))]
+     (->> locations
+          (map (fn [uri]
+                 (try
+                   [(let [[scheme base] (-> uri (string/split #"://"))]
+                      (-> base
+                          (string/split #"/")
+                          (first)
+                          (->> (str scheme "://"))))
+                    (clojure.xml/parse uri)]
+                   (catch Exception e
+                     nil))))
+          (mapcat (fn [[uri doc]]
+                    (let [uri (or (->> (xml-seq doc)
+                                       (filter (fn [x] (= :URLBase (:tag x))))
+                                       (map :content)
+                                       (first)
+                                       (first))
+                                  uri)]
+                      (->> (xml-seq doc)
+                           (filter (fn [x] (= :service (:tag x))))
+                           (map (fn [{:keys [content]}]
+                                  (->> content
+                                       (map (fn [node]
+                                              [(:tag node) (-> node :content first)]))
+                                       (into {:uri uri}))))))))))
+   (def services *1)
+   (count services)
+   (->> services (map :serviceType))
+   (last services)
+
+   (->> services
+        #_(filter (fn [{:keys [serviceType]}]
+                  (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"
+                              serviceType)))
+        (map (fn [{:keys [uri SCPDURL] :as service}]
+               (try
+                 [service
+                  (clojure.xml/parse (str uri SCPDURL))]
+                 (catch Exception e
+                   nil))))
+        (map (fn [[service doc]]
+               {:service service
+                :actions
+                (->> (xml-seq doc)
+                     (filter (fn [x] (= :action (:tag x))))
+                     (map (fn [{:keys [content]}]
+                            (->> content
+                                 (map (fn [{:keys [tag content] :as node}]
+                                        (cond
+                                          (= tag :name)
+                                          [tag (first content)]
+                                          (= tag :argumentList)
+                                          [tag (->> content (map (fn [{:keys [content]}]
+                                                                   (->> content
+                                                                        (map (fn [node]
+                                                                               [(:tag node)
+                                                                                (-> node :content first)]))
+                                                                        (into {})))))])))
+                                 (into {})))))
+                :state
+                (->> (xml-seq doc)
+                     (filter (fn [x] (= :stateVariable (:tag x))))
+                     (map (fn [{:keys [content]}]
+                            (->> content
+                                 (map (fn [{:keys [tag content] :as node}]
+                                        (cond
+                                          (contains? #{:name :dataType :defaultValue} tag)
+                                          [tag (first content)]
+                                          (= tag :allowedValueList)
+                                          [tag (->> content (map (fn [node]
+                                                                   (-> node :content first)))
+                                                    #_(into {}))])))
+                                 (into {})))))})))
+   (def scp *1)
+   (->> scp first :actions (map :name))
+
+   (->> scp
+        (filter (fn [{:keys [service]}]
+                  (->> service
+                       :serviceType
+                       (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"))))
+        (mapcat (fn [{:keys [service actions state]}]
+                  (->> actions (filter (fn [{:keys [name]}] (= name "GetExternalIPAddress")))))))
+
+   ;; SOAP request body
+   (let [service (->> services (filter (fn [{:keys [serviceType]}]
+                                         (string/includes? serviceType "WANIP")))
+                      (first))
+         service-type (:serviceType service)
+         action "GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
+         args {} #_{:NewPortMappingIndex "0"} #_{:NewRemoteHost "" :NewProtocol "TCP"
+               :NewExternalPort "8080"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
+               :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
+               :NewEnabled "1" :NewPortMappingDescription "alpeware"
+                 :NewLeaseDuration "0"}
+         soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
+                                                    :SOAP-ENV:encodingStyle "http://schemas.xmlsoap.org/soap/encoding/"}
+                    :content [{:tag :SOAP-ENV:Body
+                               :content [{:tag (str "m:" action) :attrs {"xmlns:m" service-type}
+                                          :content (->> args (map (fn [[k v]]
+                                                                    {:tag k :content [v]})))}]}]}
+                   (clojure.xml/emit)
+                   (with-out-str))
+         soap (string/replace soap "\n" "")
+         path (-> service :controlURL)
+         [host port] (-> service :uri (string/replace "http://" "") (string/split #":"))
+         port (Integer/parseInt port)
+         xf (comp
+             selector-rf
+             (thread-rf
+              (comp
+               (select-rf
+                (comp
+                 (channel-rf
+                  (comp
+                   read-rf
+                   write-rf
+                   (send-rf (comp
+                             (map
+                              (fn [{:http/keys [host port] :as x}]
+                                (prn soap)
+                                (assoc x
+                                       :http/headers {:SOAPAction (str service-type "#" action)
+                                                      :content-type "text/xml"}
+                                       :http/body soap)))
+                             http/http-rf))
+                   #_(rf/debug-rf ::sent)
+                   readable-rf
+                   (receive-rf (comp
+                                (map (fn [{:keys [byte] :as x}]
+                                       (assoc x :char (char byte))))
+                                header/response-line
+                                header/headers
+                                http/chunked-rf
+                                http/text-rf
+                                body-rf
+                                (map (fn [{:http/keys [body]
+                                           :keys [status reason headers]
+                                           :as x}]
+                                       (prn status reason headers)
+                                       (prn body)
+                                       x))))
+                   close-connection))))
+               close-rf)))]
+     (->> [{:context/bip-size (* 1 4096)
+            :http/scheme :http
+            :http/path path
+            :http/port port
+            :http/host host
+            :http/method :POST
+            :http/minor 1 :http/major 1}]
+          (into [] xf)))
+   (def x (first *1))
+
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x (read!))
+
+
+   (->> services (filter (fn [{:keys [serviceType]}]
+                           (string/includes? serviceType "WANIP"))))
+   *e
+
+   (require 'clojure.xml)
+
+   (->> (xml-seq doc)
+        (filter (fn [x] (= :service (:tag x)))))
+
+   (->> x :nio/selector (.keys) (map (fn [e]
+                                       (-> e (.channel) (.close))
+                                       (.cancel e))))
+   (-> x :nio/selector (.wakeup))
+   (-> x :nio/selector (.keys))
+   (-> x :nio/selector (.keys) (first))
+   (-> x :nio/selector (.keys) (first) (.channel) (.isConnected))
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x (datagram-receive!))
+   (-> x :nio/selector (.keys) (first) (.attachment) :context/x (assoc :http/req ["foo"]) (datagram-send!))
+   (-> x :nio/selector (.keys) (first) (.channel) (.getLocalAddress))
+   (-> x :nio/selector (.keys) (first) (.channel) (.socket) (.getLocalPort))
+
+   (into []
+         (comp
+          (datagram-send-rf (comp
+                             (map
+                              (fn [{:http/keys [host port] :as x}]
+                                (assoc x :http/req ["foo"]))))))
+         [(-> x :nio/selector (.keys) (first) (.attachment) :context/x)])
 
    *e
    *ns*

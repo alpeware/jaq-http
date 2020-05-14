@@ -3,6 +3,7 @@
      (:require [cljs.core]
                [clojure.pprint :refer [pprint]]
                [goog.dom :as dom]
+               [garden.core :refer [css]]
                [jaq.http.xrf.html :as html])
      :clj
      (:require [clojure.pprint :refer [pprint]]
@@ -71,7 +72,7 @@
                       :component/keys [state]
                       :as x}]
                   (assoc x
-                         :net/uri (str "http://localhost:32768/remote?ns=jaq.http.xrf.handler&var=echo-rf&token=" (:token @state))
+                         :net/uri (str "/remote?ns=jaq.http.xrf.handler&var=echo-rf&token=" (:token @state))
                          :event/src xhr
                          :event/type (get html/net-events :complete))))
            (map (fn [{:net/keys [xhr uri]
@@ -104,11 +105,12 @@
                            (> (System/currentTimeMillis) expires-in))))
         (rf/one-rf :oauth2/access-token (comp
                                          (map :oauth2/access-token)))
-        (map (fn [x]
+        (map (fn [{{:keys [token]} :params
+                   :as x}]
                (-> x
                    (dissoc :http/json :http/body :http/chunks :http/headers :ssl/engine)
                    (assoc :http/params {:bucket "staging.alpeware-foo-bar.appspot.com"
-                                        ;;:prefix "app/v7/classes/jaq/repl"
+                                        :prefix token
                                         }
                           :http/host storage/root
                           ;;:storage/prefix "app/v7"
@@ -250,34 +252,55 @@
          (comp
           html/render-rf)
          [{:event/src (dom/getElement "app")
-           :dom/hiccup [:div#main
-                        [:form
-                         [:label "Token"]
-                         [:input {:type "text"
-                                  :value ""}]
-                         [:button#submit {:type "button"} "Submit"]]
-                        [:div#info]
-                        [:div#response]]}])
+           :dom/hiccup [:div
+                        [:style {:type "text/css"}
+                         (css [:div#main {:font-size "16px"}] [:div#response {:background-color "blue"}])]
+                        [:div#main
+                         [:form
+                          [:label "Token"]
+                          [:input {:type "text"
+                                   :value ""}]
+                          [:button#submit {:type "button"} "Submit"]]
+                         [:div#info]
+                         [:div#response]]]}])
 
    (def x
      (let [state (volatile! {:token ""})
            on-change (fn [k e] (vswap! state assoc k (-> e .-target .-value)))
            on-focus (fn [k e] (-> e .-target .-value (set! (get @state k))))
            x {:component/state state
+              :component/css [:div#main {:font-size 16}]
               :event/src (dom/getElement "app")
-              :dom/hiccup [:div#main
-                           [:form
-                            [:label "Token"]
-                            [:input {:type "text"
-                                     :value (:token @state)
-                                     :onfocus (partial on-focus :token)
-                                     :onchange (partial on-change :token)}]
-                            [:button#submit {:type "button"} "Submit"]]
-                           [:div#info]
-                           [:div#response]]}]
+              :dom/hiccup [:div
+                           [:style {:type "text/css"}
+                            (css [:div#main {:font-size "16px"}] [:div#response {:background-color "blue"}])]
+                           [:div#main
+                            [:form
+                             [:label "Token"]
+                             [:input {:type "text"
+                                      :value (:token @state)
+                                      :onfocus (partial on-focus :token)
+                                      :onchange (partial on-change :token)}]
+                             [:button#submit {:type "button"} "Submit"]]
+                            [:div#info]
+                            [:div#response]]]}]
        (first
         (into [] echo-rf [x]))))
 
+   (-> x :component/state)
+
+   (goog/getCssName "foo")
    (-> (dom/getDocument) (.querySelector "button") (goog.events/removeAll))
 
+   )
+
+;; css
+
+#_(
+   (->> (into [:body] (map (fn [x]
+                             [x {:font-size "16px"}]) [:h1 :h2 :h3]))
+        (css)
+        (garden.compression/compress-stylesheet))
+
+   (css [:div#main {:font-size 16}])
    )

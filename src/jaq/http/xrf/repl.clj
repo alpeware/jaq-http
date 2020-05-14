@@ -943,7 +943,7 @@
             :context/repl-clients (volatile! {})
             :http/host "localhost"
             :http/scheme :http
-            :http/port 10010
+            :http/port 8080 #_10010
             :http/minor 1 :http/major 1}]
           (into [] repl-rf)
           (first)))
@@ -953,6 +953,7 @@
                                        (-> sk (.cancel)))) (doall))
    (-> x :nio/selector (.close))
 
+   (-> x :context/repl-clients (deref))
 
    (into []
          (comp
