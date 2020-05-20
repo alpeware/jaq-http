@@ -1,4 +1,13 @@
 (ns jaq.http.xrf.upnp
+  "Universal Plug and Play (UPnP) implementation.
+
+  Focus is on opening ports on routers during development.
+
+  Helpful resources:
+  - https://tools.ietf.org/html/draft-cai-ssdp-v1-03
+  - https://github.com/adolfintel/WaifUPnP
+  - https://www.electricmonk.nl/log/2016/07/05/exploring-upnp-with-python/
+  "
   (:require
    [clojure.string :as string]
    [clojure.xml :as xml]

@@ -180,7 +180,7 @@
 
         socket-address ;; read some bytes
         (do
-          (prn ::received socket-address)
+          (prn ::received ::from socket-address)
           (->> bb
                (.flip)
                (commit))))
@@ -516,14 +516,16 @@
 
 (def datagram-read-rf
   (fn [rf]
-    (fn
-      ([] (rf))
-      ([acc] (rf acc))
-      ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
-       (when (and (.isValid selection-key)
-                  (.isReadable selection-key))
-         (datagram-receive! x))
-       (rf acc x)))))
+    (let [address (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
+         (when (and (.isValid selection-key)
+                    (.isReadable selection-key))
+           (vreset! address (datagram-receive! x)))
+         (->> (assoc x :nio/address @address)
+              (rf acc)))))))
 
 (def datagram-write-rf
   (fn [rf]
@@ -635,7 +637,7 @@
          (when-not @channel
            (->> (datagram-channel!)
                 (non-blocking)
-                (datagram-bind! (address local-port))
+                (datagram-bind! (when local-port (address local-port)))
                 (vreset! channel)
                 #_(datagram-connect! (address host port))
                 (datagram-register! selector
@@ -2011,8 +2013,8 @@
                                          (string/includes? serviceType "WANIP")))
                       (first))
          service-type (:serviceType service)
-         action "GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
-         args {} #_{:NewPortMappingIndex "0"} #_{:NewRemoteHost "" :NewProtocol "TCP"
+         action  "DeletePortMapping" #_"GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
+         args  #_{:NewPortMappingIndex "0"} {:NewRemoteHost "" :NewProtocol "TCP"
                :NewExternalPort "8080"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
                :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
                :NewEnabled "1" :NewPortMappingDescription "alpeware"

@@ -304,3 +304,65 @@
 
    (css [:div#main {:font-size 16}])
    )
+
+
+;; webrtc
+
+#_(
+
+   ;; navigator.mediaDevices.enumerateDevices()
+
+   (-> (.enumerateDevices js/navigator.mediaDevices)
+       (.then (fn [devices]
+                (->> devices
+                     (map (fn [e]
+                            (.info js/console e)))
+                     (doall)))))
+
+   (->
+    (.getDisplayMedia js/navigator.mediaDevices (clj->js {:video true :audo false}))
+    (.then (fn [stream]
+             (set! (.-srcObject (dom/getElement "video")) stream)
+             (.play (dom/getElement "video"))
+             (.setAttribute (dom/getElement "video") "width" 640)
+             (.setAttribute (dom/getElement "video") "height" 320))))
+
+   (.setAttribute (dom/getElement "video") "width" 1280)
+   (.setAttribute (dom/getElement "video") "height" 640)
+
+   (.setAttribute (dom/getElement "video") "width" 640)
+
+   (let [channel-name "foobar"
+         conf {:iceServers [{:urls "stun:stun.l.google.com:19302"}]}
+         constraints {:video false :audio true}
+         peer (js/RTCPeerConnection. (clj->js conf))
+         channel (.createDataChannel peer channel-name)
+         info (fn [e] (.info js/console e))]
+     (set! (.-onicecandidate peer) info)
+     (set! (.-onopen channel) info)
+     (set! (.-onclose channel) info)
+     (-> (.createOffer peer)
+         (.then (fn [offer]
+                  (.info js/console (.-sdp offer)))))
+     #_(->
+      (.getUserMedia js/navigator.mediaDevices (clj->js constraints))
+      (.then (fn [stream]
+               (->> (.getTracks stream)
+                    (map (fn [track]
+                           (.addTrack stream track)
+                          (.info js/console track)))
+                   (doall))))))
+
+   (into []
+         (comp
+          html/render-rf)
+         [{:event/src (dom/getElement "app")
+           :dom/hiccup [:div
+                        [:div.camera
+                         [:video#video]
+                         [:button#start "Take Photo"]]
+                        [:div#canvas]
+                        [:div.output
+                         [:img#photo]]]}])
+
+   )
