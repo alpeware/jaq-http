@@ -2,6 +2,7 @@
   #?(:cljs
      (:require [cljs.core]
                [clojure.pprint :refer [pprint]]
+               [clojure.string :as string]
                [goog.dom :as dom]
                [garden.core :refer [css]]
                [jaq.http.xrf.html :as html])
@@ -332,26 +333,111 @@
 
    (.setAttribute (dom/getElement "video") "width" 640)
 
+   (def vpeer (volatile! nil))
+   (def vchannel (volatile! nil))
+   (def voffer (volatile! nil))
+   (def vanswer (volatile! nil))
    (let [channel-name "foobar"
-         conf {:iceServers [{:urls "stun:stun.l.google.com:19302"}]}
+         conf {} #_{:iceServers [{:urls "stun:stun.l.google.com:19302"}]
+               :iceCandidatePoolSize 1}
          constraints {:video false :audio true}
          peer (js/RTCPeerConnection. (clj->js conf))
          channel (.createDataChannel peer channel-name)
          info (fn [e] (.info js/console e))]
+     (vreset! vpeer peer)
+     (vreset! vchannel channel)
+     ;; connection
      (set! (.-onicecandidate peer) info)
+     (set! (.-onnegotiationneeded peer) info)
+     (set! (.-oniceconnectionstatechange peer) info)
+     (set! (.-onicegatheringstatechange peer) (fn [e]
+                                                (let [pc (-> e (.-target))
+                                                      state (-> pc (.-iceGatheringState))
+                                                      desc (js/RTCSessionDescription. (clj->js {:sdp @vanswer :type "answer"}))]
+                                                  (when (= state "complete")
+                                                    (info pc)
+                                                    ;; set remote descriptor
+                                                    (-> pc (.setRemoteDescription desc)
+                                                        (.then (fn [] (info desc))))))))
+     ;; channel
      (set! (.-onopen channel) info)
      (set! (.-onclose channel) info)
+     (-> peer (.getConfiguration) (info))
      (-> (.createOffer peer)
          (.then (fn [offer]
-                  (.info js/console (.-sdp offer)))))
-     #_(->
-      (.getUserMedia js/navigator.mediaDevices (clj->js constraints))
-      (.then (fn [stream]
-               (->> (.getTracks stream)
-                    (map (fn [track]
-                           (.addTrack stream track)
-                          (.info js/console track)))
-                   (doall))))))
+                  #_(vreset! voffer offer)
+                  (.info js/console (.-sdp offer))
+                  (.setLocalDescription peer offer)))
+         (.then (fn []
+                  (-> peer (.-localDescription) (info))))))
+
+   (.info js/console (js/RTCSessionDescription. (clj->js {:sdp "sdp" :type "answer"})))
+   (->> @voffer (.-type))
+   (->> @voffer (.-sdp))
+   (->> @vpeer (.-localDescription) (.info js/console))
+   (->> @vpeer (.-localDescription) (.toJSON))
+   (-> @vpeer (.-localDescription)
+       (.-sdp)
+       (string/split #"\r\n")
+       (->> (mapcat (fn [e] (string/split e #"=")))
+            (partition 2)
+            (map (fn [[k v]] [(keyword k) v]))
+            (group-by (fn [[k v]] k))
+            (map (fn [[k v]] [k (->> v (mapcat identity) (remove (fn [e] (= e k))) (vec))]))
+            (into {})
+            (map (fn [[k v]]
+                   (if (= k :a)
+                     [k (->> v (map (fn [e] (string/split e #":" 2)))
+                             (map (fn [[k v]] [(keyword k) v]))
+                             (group-by (fn [[k v]] k))
+                             (map (fn [[k v]] [k (->> v (mapcat identity) (remove (fn [e] (= e k))) (vec))]))
+                             (into {}))]
+                     [k v])))
+            (into {})
+            :a
+            :candidate
+            (sort-by (fn [e] (->> (string/split e #"\s") (drop 3) (first))))))
+
+   (->> {:v ["0"] ;; version
+         :s ["-"] ;; session name
+         :t ["0 0"] ;; start end time
+         :c ["IN IP4 192.168.1.140"] ;; connection data
+         :m ["application 2223 UDP/DTLS/SCTP webrtc-datachannel"] ;; media description
+         :o ["- 1234 1 IN IP4 127.0.0.1"] ;; origin
+         :a {:ice-ufrag ["abcd"] ;; attributes
+             :ice-pwd ["1234567890123456789012"]
+             :setup ["passive"]
+             :candidate ["1 1 udp 1 192.168.1.140 2223 typ host"] ;; foundation component transport priority address port type
+             :fingerprint [(str "sha-256 " (string/join ":" fingerprint))]}}
+        ;; need to order the keys unfortunately
+        ((fn [{:keys [v o s t m c a] :as sdp}]
+           [[:v v] [:o o] [:s s] [:t t] [:m m] [:c c] [:a a]]))
+        (map (fn [[k v]]
+               (if (= k :a)
+                 (->> v (mapcat (fn [[e f]] (->> f (map (fn [g] (str (name k) "=" (name e) ":" g)))))))
+                 (->> v (map (fn [e] (str (name k) "=" e)))))))
+        (mapcat identity)
+        (reverse)
+        (into [""])
+        (reverse)
+        (string/join "\r\n")
+        (vreset! vanswer))
+
+   @vanswer
+
+   (def fingerprint ["BA" "84" "D0" "2E" "11" "31" "EE" "25" "47" "41" "6D" "F8" "E7" "F6" "A3" "AD" "C9" "39" "25" "49" "E1" "40" "E3" "BB" "F2" "E8" "25" "A8" "5F" "EE" "C1" "C7"])
+   (string/join ":" fingerprint)
+   (->> (repeatedly
+         (fn []
+           (->> (.charCodeAt \a) (+ (rand-int 26)) (char))))
+        (take 10)
+        (apply str))
+
+   (->> sdp :a)
+
+   ;; https://hpbn.co/webrtc/
+
+   (->> [[:foo :bar] [:bar :baz]] (into {}))
 
    (into []
          (comp

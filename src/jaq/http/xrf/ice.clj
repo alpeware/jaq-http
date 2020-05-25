@@ -1,9 +1,8 @@
-(ns jaq.http.xrf.sctp
-  "SCTP over UDP implementation.
+(ns jaq.http.xrf.ice
+  "ICE implementation.
 
   Helpful resources:
-  - https://tools.ietf.org/html/rfc6951
-  - https://tools.ietf.org/html/rfc4960
+  - https://tools.ietf.org/html/rfc5245
   "
   (:require
    [clojure.string :as string]
@@ -14,6 +13,7 @@
    [jaq.http.xrf.dtls :as dtls]
    [jaq.http.xrf.rf :as rf])
   (:import
+   [java.net NetworkInterface]
    [java.nio ByteBuffer]))
 
 ;; TODO: add config-rf
@@ -218,12 +218,12 @@
    )
 
 #_(
-   (in-ns 'jaq.http.xrf.sctp)
-   (require 'jaq.http.xrf.sctp :reload)
+   (in-ns 'jaq.http.xrf.ice)
+   (require 'jaq.http.xrf.ice :reload)
    *e
 
    ;; dtls client
-   (let [;;host "localhost"
+   (let [host "localhost"
          ;;port 13222
          certs [(dtls/self-cert :cert/alias "server")
                 (dtls/self-cert :cert/alias "client")]
@@ -234,7 +234,7 @@
               (comp
                (nio/select-rf
                 (comp
-                 (nio/datagram-channel-rf
+                 #_(nio/datagram-channel-rf
                   (comp ;; server
                    (comp ;; ssl connection
                     (map (fn [{:ssl/keys [cert] :as x}]
@@ -253,7 +253,7 @@
                                   (nio/read-writable! selection-key)
                                   x))
                     dtls/handshake-rf)
-                   (rf/debug-rf ::handshake)
+                   #_(rf/debug-rf ::handshake)
                    nio/readable-rf
                    (dtls/receive-ssl-rf (comp
                                              #_(rf/debug-rf ::received)
@@ -264,7 +264,7 @@
                                                     x))
                                              (drop-while (fn [{:keys [byte]}]
                                                            (not= 10 byte)))))
-                   #_(comp
+                   (comp
                     nio/writable-rf
                     (dtls/request-ssl-rf (comp
                                           #_(rf/debug-rf ::sent)
@@ -273,13 +273,64 @@
                                              (assoc x :http/req req)))))
                     (drop-while (fn [{{:keys [reserve commit block decommit] :as bip} :nio/out}]
                                   (.hasRemaining (block)))))
-                   #_nio/close-connection))))
-               #_nio/close-rf)))]
-     (let [port 2223
+                   nio/close-connection))
+                 (map (fn [x]
+                        (-> x
+                            (dissoc :ssl/engine :http/local-port :nio/selection-key
+                                    :nio/channel :ssl/mode)
+                            (assoc :ssl/mode :client))))
+                 (nio/datagram-channel-rf
+                  (comp ;; client
+                   (comp ;; ssl connection
+                    (map (fn [{:ssl/keys [cert] :as x}]
+                           (assoc x :ssl/cert (last cert))))
+                    dtls/ssl-rf
+                    nio/datagram-read-rf
+                    (map (fn [{:nio/keys [address] :as x}]
+                           (if address
+                             (assoc x
+                                    :http/host (.getHostName address)
+                                    :http/port (.getPort address))
+                             x)))
+                    nio/datagram-write-rf
+                    ;; need to register for both writable/readable
+                    (rf/once-rf (fn [{:nio/keys [selection-key] :as x}]
+                                  (nio/read-writable! selection-key)
+                                  x))
+                    dtls/handshake-rf)
+                   nio/writable-rf
+                   (dtls/request-ssl-rf (comp
+                                          (map
+                                           (fn [{:ssl/keys [engine]
+                                                 :as x}]
+                                             (assoc x :http/req req)))))
+                   (drop-while (fn [{{:keys [reserve commit block decommit] :as bip} :nio/out}]
+                                 (.hasRemaining (block))))
+                   ;; clearing out buffer
+                   (rf/once-rf (fn [{{:keys [reserve commit block decommit] :as bip} :nio/in :as x}]
+                                 (loop [bb (block)]
+                                   (when (.hasRemaining bb)
+                                     (-> bb (.position (.limit bb)) (decommit))
+                                     (prn ::clearing bb)
+                                     (recur (block))))
+                                 x))
+                   #_(rf/debug-rf ::sent)
+                   (comp
+                    nio/readable-rf
+                    (dtls/receive-ssl-rf (comp
+                                          #_(rf/debug-rf ::received)
+                                          (map (fn [{:keys [byte] :as x}]
+                                                 (prn ::client byte)
+                                                 x))
+                                          (drop-while (fn [{:keys [byte]}]
+                                                        (not= 10 byte))))))
+                   nio/close-connection))))
+               nio/close-rf)))]
+     (let [port 37104
            host "192.168.1.140"]
        (->> [{:context/bip-size (* 20 4096)
               :ssl/packet-size 1024
-              :ssl/certs [cert]
+              :ssl/certs certs
               :ssl/mode :server
               :http/host host
               :http/port port
@@ -287,22 +338,10 @@
             (into [] xf))))
    (def x (first *1))
    *e
-   *ns*
-   (require 'jaq.http.xrf.sctp)
-   (in-ns 'jaq.http.xrf.sctp)
+   (in-ns 'jaq.http.xrf.ice)
    (ns-unmap *ns* 'y)
    (->> y :ssl/engine (.getSSLContext))
    (->> y :byte)
-
-   (def cert (dtls/self-cert :cert/alias "server"))
-   ;; fingerprint
-   (->> cert :cert/cert (.getEncoded)
-        (.digest (java.security.MessageDigest/getInstance "SHA-256"))
-        (map (fn [x] (bit-and x 0xff)))
-        (map (fn [x] (Integer/toHexString x)))
-        (map (fn [x] (if (= (count x) 1) (str "0" x) x)))
-        (map string/upper-case)
-        (into []))
 
    (->> x :ssl/certs (filter (fn [{alias :cert/alias}] (= alias "server"))) (first) :cert/private-key)
    (-> x :nio/selector (.keys))
@@ -327,5 +366,24 @@
    (-> x :nio/selector (.keys) (last) (.channel) (.socket) (.getLocalPort))
    (-> x :nio/selector (.keys) (last) (.attachment) :context/x (nio/datagram-send!))
    (-> x :nio/selector (.keys) (last) (.attachment) :context/x (nio/datagram-receive!))
+
+   )
+
+
+#_(
+
+   ;; ice
+
+   ;; get all unique ip addresses from all interfaces
+   (->> (NetworkInterface/getNetworkInterfaces)
+        (enumeration-seq)
+        (mapcat (fn [e]
+               (->> (.getInetAddresses e)
+                    (enumeration-seq)
+                    (map (fn [f] (.getHostAddress f))))))
+        (set))
+
+   ;; listen
+
 
    )

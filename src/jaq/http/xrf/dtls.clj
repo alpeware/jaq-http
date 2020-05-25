@@ -1,5 +1,8 @@
 (ns jaq.http.xrf.dtls
-  "DTLS over UDP implementation."
+  "DTLS over UDP implementation.
+
+  Helpful resources:
+  - https://docs.oracle.com/javase/9/security/java-secure-socket-extension-jsse-reference-guide.htm"
   (:require
    [clojure.string :as string]
    [clojure.set :as set]

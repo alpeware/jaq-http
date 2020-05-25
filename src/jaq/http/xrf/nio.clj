@@ -654,7 +654,8 @@
                                                          xf
                                                          (continuation-rf rf))
                                                         (rf/result-fn))))
-                (writable!)
+                #_(writable!)
+                (readable!)
                 (vreset! selection-key))
            (-> @selection-key
                ;; TODO: fix
