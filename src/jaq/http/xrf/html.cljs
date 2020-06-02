@@ -243,13 +243,13 @@
          (->> (assoc x :listener/key @listen)
               (rf acc)))))))
 
-(defn await-rf [src type]
+(def await-rf
   (fn [rf]
     (let [once (volatile! nil)]
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:event/keys []
+        ([acc {:event/keys [src type]
                :as x}]
          (when-not @once
            (->> (events/listen-once src
@@ -278,8 +278,7 @@
            (->> (events/listen src
                                type
                                (fn [e]
-                                 (.info js/console "firing")
-                                 (xrf acc (assoc (xrf)
+                                 (xrf acc (assoc x #_(xrf)
                                                 :context/rf xrf
                                                 :context/x x
                                                 :event/target (.-target e)
@@ -333,6 +332,7 @@
 
 #_(
 
+   (require 'jaq.http.xrf.html)
    (dom/getElement "main")
 
    x

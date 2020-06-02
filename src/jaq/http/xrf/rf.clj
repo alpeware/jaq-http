@@ -113,7 +113,7 @@
                       ex))]
            (cond
              (instance? e x')
-             (rf acc (f x))
+             (rf acc (f (assoc x :error/exception x')))
 
              (instance? Exception x')
              (throw x')

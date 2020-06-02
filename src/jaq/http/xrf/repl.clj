@@ -768,6 +768,7 @@
                                   (map (fn [{:keys [path]
                                              :file/keys [^ByteBuffer buf content-type]
                                              :as x}]
+                                         (prn ::content content-type buf)
                                          (assoc x
                                                 :http/status 200
                                                 :http/reason "OK"
@@ -807,8 +808,8 @@
                                          (let [sym (symbol ns var)]
                                            (when-not (get @xrfm sym)
                                              (vswap! xrfm assoc sym
-                                                      (-> (ns-resolve (symbol (namespace sym)) (symbol (name sym)))
-                                                          (apply [(rf/result-fn)]))))
+                                                     (-> (ns-resolve (symbol (namespace sym)) (symbol (name sym)))
+                                                         (apply [(rf/result-fn)]))))
                                            (-> (get @xrfm sym)
                                                (apply [acc x]))
                                            (if-let [x' (-> (get @xrfm sym)
@@ -851,6 +852,7 @@
                          (map (fn [{:keys [path]
                                     {:keys [host]} :headers
                                     :as x}]
+                                (prn ::404 path)
                                 (assoc x
                                        :http/status 404
                                        :http/reason "Not Found"
@@ -951,6 +953,17 @@
    (->> x :nio/selector (.keys) (map (fn [sk]
                                        (-> sk (.channel) (.close))
                                        (-> sk (.cancel)))) (doall))
+
+   ;; close UDP socket. TODO: by protocol
+   (->> x :nio/selector
+        (.keys)
+        (filter (fn [sk]
+                  (-> sk (.channel) (.socket) (.getLocalPort) (= 2230))))
+        (map (fn [sk]
+               (-> sk (.channel) (.close))
+               (-> sk (.cancel))))
+        (doall))
+
    (-> x :nio/selector (.close))
 
    (-> x :context/repl-clients (deref))
