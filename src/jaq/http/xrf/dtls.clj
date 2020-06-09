@@ -21,7 +21,7 @@
     SSLContext SSLSession SSLException TrustManagerFactory KeyManagerFactory
     X509TrustManager TrustManager X509KeyManager X509ExtendedKeyManager]
    [java.security.cert X509Certificate]
-   [java.security PrivateKey SecureRandom KeyStore]
+   [java.security PrivateKey SecureRandom KeyStore MessageDigest]
    [java.util.concurrent ConcurrentLinkedDeque]
    [java.util Date Base64]
    [sun.security.provider X509Factory]
@@ -36,6 +36,20 @@
 (def default-key-bits 2048)
 (def default-keystore-type "PKCS12")
 
+;; https://stackoverflow.com/a/1271148/7947020
+(defn fingerprint [cert]
+  (let [md (MessageDigest/getInstance "SHA-256")]
+    (->> cert
+         (.getEncoded)
+         (.update md))
+    (->> (.digest md)
+         (map byte)
+         (map (fn [x] (bit-and x 0xff)))
+         (map (fn [x] (Integer/toHexString x)))
+         (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
+         (map (fn [x] (string/upper-case x)))
+         (into []))))
+
 (defn self-cert [& {:cert/keys [alias dn validity key-type sig-alg key-bits]
                   :or {dn default-dn validity default-validity
                        key-type default-key-type sig-alg default-sig-alg
@@ -45,10 +59,35 @@
     (.generate keytool key-bits)
     (let [cert (.getSelfCertificate keytool x500name validity)]
       {:cert/cert cert
+       :cert/fingerprint (fingerprint cert)
        :cert/alias (or alias (str (.getSerialNumber cert)))
        :cert/private-key (.getPrivateKey keytool)})))
 
 #_(
+   (in-ns 'jaq.http.xrf.dtls)
+   (def cert (self-cert :cert/alias "foo"))
+   (->> cert
+        :cert/cert
+        (.getEncoded)
+        (map byte)
+        (map (fn [x] (bit-and x 0xff)))
+        (map (fn [x] (Integer/toHexString x)))
+        (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
+        (map (fn [x] (string/upper-case x)))
+        (into []))
+
+   (let [md (MessageDigest/getInstance "SHA-256")]
+     (->> cert
+         :cert/cert
+         (.getEncoded)
+         (.update md))
+     (->> (.digest md)
+          (map byte)
+          (map (fn [x] (bit-and x 0xff)))
+          (map (fn [x] (Integer/toHexString x)))
+          (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
+          (map (fn [x] (string/upper-case x)))
+          (into [])))
 
    (self-cert :cert/alias "foo")
    (self-cert)

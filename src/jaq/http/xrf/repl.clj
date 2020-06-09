@@ -953,18 +953,21 @@
    (->> x :nio/selector (.keys) (map (fn [sk]
                                        (-> sk (.channel) (.close))
                                        (-> sk (.cancel)))) (doall))
+   (-> x :nio/selector (.close))
 
+   (->> x :nio/selector (.keys))
    ;; close UDP socket. TODO: by protocol
    (->> x :nio/selector
         (.keys)
         (filter (fn [sk]
-                  (-> sk (.channel) (.socket) (.getLocalPort) (= 2230))))
+                  (-> sk (.channel) (.socket) (.getLocalPort) (= 40055))))
         (map (fn [sk]
                (-> sk (.channel) (.close))
                (-> sk (.cancel))))
         (doall))
+   (in-ns 'jaq.http.xrf.repl)
 
-   (-> x :nio/selector (.close))
+
 
    (-> x :context/repl-clients (deref))
 

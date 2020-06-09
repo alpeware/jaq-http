@@ -36,7 +36,11 @@
                [jaq.gcp.storage :as storage]))
   #?(:cljs
      (:import [goog.net XhrIo]
-              [goog.events EventTarget EventType])))
+              [goog.events EventTarget EventType])
+     :clj
+     (:import
+      [java.net NetworkInterface]
+      [java.nio ByteBuffer])))
 
 (defn parse-sdp [s]
   (-> s
@@ -420,28 +424,7 @@
        :clj
        (comp
         (rf/one-rf :context/client (comp
-                                      (map :nio/selection-key)))
-        ;; got list of files
-        #_(fn [rf]
-            (let [objects (volatile! nil)]
-              (fn
-                ([] (rf))
-                ([acc] (rf acc))
-                ([acc {:appengine/keys [app service]
-                       :storage/keys [pages bucket]
-                       :as x}]
-                 (when-not @objects
-                   (->> pages (mapcat :items) (vreset! objects)))
-                 (prn ::objects (count @objects))
-                 (-> x
-                     (dissoc :http/params :http/headers :http/body
-                             :http/req :http/chunks :http/json
-                             :ssl/engine)
-                     #_(assoc-in [:http/params :app] app)
-                     #_(assoc-in [:http/params :service] service)
-                     (assoc :storage/objects @objects)
-                     #_(assoc :http/host appengine/root-url)
-                     (->> (rf acc)))))))
+                                    (map :nio/selection-key)))
         ;; parse post body
         (nio/receive-rf
          (comp
@@ -449,63 +432,71 @@
           http/text-rf
           nio/body-rf))
         #_(rf/debug-rf ::json)
-        (map (fn [{:http/keys [json] :as x}]
-               ;; TODO: cert and fingerprint
+        (rf/one-rf :ssl/cert (comp
+                              (map (fn [x] (assoc x :ssl/cert (dtls/self-cert :cert/alias "server"))))
+                              (map :ssl/cert)))
+        (map (fn [{:http/keys [json]
+                   :ssl/keys [cert]
+                   {:cert/keys [fingerprint]} :ssl/cert
+                   :as x}]
                (assoc x
-                      :stun/fingerprint ["BA" "84" "D0" "2E" "11" "31" "EE" "25" "47" "41" "6D" "F8" "E7" "F6" "A3" "AD" "C9" "39" "25" "49" "E1" "40" "E3" "BB" "F2" "E8" "25" "A8" "5F" "EE" "C1" "C7"]
+                      :context/bip-size (* 20 4096)
+                      :ssl/packet-size 1024
+                      :ssl/mode :server
+                      :ssl/certs [cert]
+                      :sdp/fingerprint fingerprint
                       :stun/password "1234567890123456789012"
                       :stun/ufrag "abcd"
-                      :http/local-port 2230
+                      ;;:http/local-port 2230
                       :context/remote-password (->> json :sdp :sdp (parse-sdp) :a
                                                     :ice-pwd (first)))))
-        (rf/catch-rf
-         Exception
-         (fn [{:error/keys [exception] :as x}]
-           (assoc x :http/json {:error (.getMessage exception)}))
-         (comp
-          ;; handle ICE
-          #_(map (fn [{:http/keys [json] :as x}]
-                 ;; TODO: cert and fingerprint
-                 (assoc x
-                        :stun/fingerprint ["BA" "84" "D0" "2E" "11" "31" "EE" "25" "47" "41" "6D" "F8" "E7" "F6" "A3" "AD" "C9" "39" "25" "49" "E1" "40" "E3" "BB" "F2" "E8" "25" "A8" "5F" "EE" "C1" "C7"]
-                        :stun/password "1234567890123456789012"
-                        :stun/ufrag "abcd"
-                        :http/local-port 2230
-                        :context/remote-password (->> json :sdp :sdp (parse-sdp) :a
-                                                      :ice-pwd (first)))))
-          ice/stun-rf))
+        ;; UDP port
+        (rf/one-rf :http/local-port
+                   (comp
+                    (ice/data-channel-rf (comp
+                                          (rf/one-rf :context/buf (comp
+                                                                   (map (fn [x]
+                                                                          (assoc x :context/buf (ByteBuffer/allocate 150))))
+                                                                   (map :context/buf)))
+                                          ice/simple-stun-rf
+                                          ice/dtls-rf))
+                    (map (fn [{:nio/keys [selection-key]
+                               :as x}]
+                           (assoc x :http/local-port (-> selection-key (.channel) (.socket) (.getLocalPort)))))
+                    (map :http/local-port)))
         ;; restore selection key
-        (map (fn [{:context/keys [client]
+        #_(map (fn [{:context/keys [client]
                    :as x}]
                (assoc x :nio/selection-key client)))
         (map (fn [{:context/keys [client]
-                   :stun/keys [fingerprint]
+                   ;;:stun/keys [fingerprint]
                    :http/keys [local-port]
                    :as x}]
                (assoc x
-                      :sdp/port local-port
-                      :sdp/fingerprint fingerprint)))
+                      ;;:sdp/fingerprint fingerprint
+                      :sdp/port local-port)))
         ;; create SDP answer
-        (map (fn [x]
-               (assoc x :http/json {:type "answer" :sdp (sdp x)})))
-        (rf/debug-rf ::json)
-        (map (fn [{:http/keys [json]
-                   :as x}]
-               (prn ::json json)
-               (assoc x
-                      :http/status 200
-                      :http/reason "OK"
-                      :http/headers {:content-type "application/json"
-                                     :connection "keep-alive"}
-                      :http/body (json/write-str json))))
         (comp
          nio/writable-rf
          (nio/send-rf (comp
+                       (map (fn [x]
+                              (assoc x :http/json {:type "answer" :sdp (sdp x)})))
+                       (rf/debug-rf ::json)
+                       (map (fn [{:http/keys [json]
+                                  :as x}]
+                              (prn ::json json)
+                              (assoc x
+                                     :http/status 200
+                                     :http/reason "OK"
+                                     :http/headers {:content-type "application/json"
+                                                    :connection "close"}
+                                     :http/body (json/write-str json))))
                        nio/response-rf))
          nio/readable-rf)
-        (map (fn [x]
-               (prn ::sent)
-               x)))))
+        #_nio/close-connection
+        #_(map (fn [x]
+                 (prn ::sent)
+                 x)))))
 
    ;; back on the client
    (comp
@@ -587,6 +578,7 @@
                             [:div#response]]]}]
        (first
         (into [] connect-rf [x]))))
+   (-> x :rtc/peer (.close))
 
    (-> x :component/state (deref) (clj->js) (JSON/stringify))
    (->> x :component/state (deref)

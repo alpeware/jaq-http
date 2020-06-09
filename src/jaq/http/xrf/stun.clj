@@ -169,6 +169,7 @@
                               length (-> pos (+ 2) (+ 2) (+ attr-length) (- 20))
                               secret-key (SecretKeySpec. (.getBytes password) hash-algo)
                               mac (Mac/getInstance hash-algo)]
+                          (prn ::password password)
                           ;; update length field before calculation
                           (-> buf
                               (.reset)
@@ -215,6 +216,7 @@
                     buf))})
 
 #_(
+   (in-ns 'jaq.http.xrf.stun)
    *e
    (let [xor-bytes [0x53 0x54 0x55 0x4e]
          crc32 (CRC32.)]
@@ -288,7 +290,6 @@
    )
 
 (defn encode [{:stun/keys [buf message id attributes] :as x}]
-  (def y x)
   ;; header
   (prn ::header (get messages message))
   (-> buf
