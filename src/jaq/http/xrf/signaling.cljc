@@ -580,6 +580,9 @@
         (into [] connect-rf [x]))))
    (-> x :rtc/peer (.close))
 
+   (-> x :rtc/channel (.-id))
+   (-> x :rtc/channel (.-label))
+
    (-> x :component/state (deref) (clj->js) (JSON/stringify))
    (->> x :component/state (deref)
         :sdp (JSON/stringify) (JSON/parse) (js->clj) (walk/keywordize-keys)

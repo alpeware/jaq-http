@@ -235,13 +235,15 @@
      (comp
       sctp/sctp-rf
       (map (fn [{:sctp/keys [chunk] :as x}]
-             (def y x)
              (prn ::chunk ::in (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
              x))
       (take 1)))
-
+    ;; verification tag of sender
+    (rf/one-rf :context/chunk (comp
+                               (map (fn [{:sctp/keys [chunk] :as x}]
+                                      (select-keys chunk [:sctp/init-tag :sctp/src :sctp/dst])))))
     ;; send init-ack
-    (nio/datagram-send-rf
+    (dtls/request-ssl-rf
      (comp
       (map (fn [{:context/keys [buf]
                  :sctp/keys [chunk]
@@ -285,6 +287,42 @@
      (drop-while (fn [{:sctp/keys [chunk] :as x}]
                    (nil? chunk)))
      (take 1)))
+
+   ;; send cookie ack
+    (dtls/request-ssl-rf
+     (comp
+      (map (fn [{:context/keys [buf chunk] :as x}]
+             (assoc x
+                    :sctp/buf (-> buf (.clear))
+                    :sctp/chunks [{:chunk :cookie-ack}]
+                    :sctp/src (:sctp/src chunk)
+                    :sctp/dst (:sctp/dst chunk)
+                    :sctp/tag (:sctp/init-tag chunk))))
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (prn ::chunk ::out (->> x
+                                     (filter (fn [[k v]]
+                                               (and
+                                                (not= k :sctp/chunk)
+                                                (= (namespace k) "sctp"))))
+                                     (into {})))
+             x))
+      (map
+       (fn [{:stun/keys [buf] :as x}]
+         (assoc x :http/req [(sctp/encode x)])))))
+    (drop-while (fn [{{:keys [reserve commit block decommit] :as bip} :nio/out}]
+                  (.hasRemaining (block))))
+
+    (dtls/receive-ssl-rf
+     (comp
+      sctp/sctp-rf
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (def y x)
+             (prn ::chunk (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
+             x))
+      (drop-while (fn [{:sctp/keys [chunk] :as x}]
+                    (nil? chunk)))
+      (take 1)))
+
    #_(rf/repeatedly-rf
       (comp
        (dtls/receive-ssl-rf
@@ -307,6 +345,8 @@
    (require 'jaq.http.xrf.ice :reload)
    y
    (->> y :context/vacc)
+   (->> y :context/packet (map (fn [x] (bit-and x 0xff))))
+   (->> y :sctp/buf)
    (->> y :sctp/chunk :sctp/random)
    (->> y :sctp/chunk :sctp/chunk)
    (->> y :sctp/chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {}))
