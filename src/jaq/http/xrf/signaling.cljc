@@ -143,6 +143,18 @@
                  v])
               (merge
                #_{:icegatheringstatechange "icegatheringstatechange"}
+               (js->clj EventType)))))
+
+     js/RTCDataChannel
+     (event-types
+       [this]
+       (into {}
+             (map
+              (fn [[k v]]
+                [(keyword (.toLowerCase k))
+                 v])
+              (merge
+               #_{:icegatheringstatechange "icegatheringstatechange"}
                (js->clj EventType))))))
 
    :clj :noop)
@@ -352,6 +364,18 @@
                                        [:label "Peer Connection"]
                                        [:button#submit {:type "button"} "Connect"]])))
           #_html/render-rf))
+        ;; data channel
+        (map (fn [{:rtc/keys [channel] :as x}]
+               (assoc x
+                      :event/src channel
+                      :event/type "open")))
+        (html/register-rf
+         (comp
+          (map (fn [{:event/keys [target]
+                     :rtc/keys [channel]
+                     :as x}]
+                 (.info js/console "open" (-> channel))
+                 x))))
         ;; create offer
         (async-rf (comp
                    (await-rf :rtc/offer (fn [{:rtc/keys [peer]}] (.createOffer peer)))
@@ -567,6 +591,7 @@
            x {:component/state state
               :component/css [:div#main {:font-size 16}]
               :event/src (dom/getElement "app")
+              :rtc/channel-name "alpeware"
               :dom/hiccup [:div
                            [:style {:type "text/css"}
                             (css [:div#main {:font-size "16px"}] [:div#response {:background-color "grey"}])]
@@ -582,6 +607,7 @@
 
    (-> x :rtc/channel (.-id))
    (-> x :rtc/channel (.-label))
+   (-> x :rtc/channel (.send "foo"))
 
    (-> x :component/state (deref) (clj->js) (JSON/stringify))
    (->> x :component/state (deref)

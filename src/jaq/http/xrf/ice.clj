@@ -226,6 +226,9 @@
                     (xrf acc x)
                     acc)))))))))
    dtls/handshake-rf
+   (rf/once-rf (fn [{:nio/keys [selection-key] :as x}]
+                 (nio/readable! selection-key)
+                 x))
    #_(rf/debug-rf ::handshake)
    (drop-while (fn [{{:keys [reserve commit block decommit] :as bip} :nio/in}]
                  (not (.hasRemaining (block)))))
@@ -241,19 +244,29 @@
     ;; verification tag of sender
     (rf/one-rf :context/chunk (comp
                                (map (fn [{:sctp/keys [chunk] :as x}]
-                                      (select-keys chunk [:sctp/init-tag :sctp/src :sctp/dst])))))
+                                      (select-keys chunk [:sctp/init-tag :sctp/src :sctp/dst
+                                                          :sctp/window :sctp/initial-tsn
+                                                          :sctp/inbound :sctp/outbound])))))
+
+    ;; our tsn cookie etc.
+    (rf/one-rf :context/sctp (comp
+                               (map (fn [{:sctp/keys [chunk] :as x}]
+                                      {:sctp/cookie (-> (sctp/random-int) (biginteger) (.toByteArray))
+                                       :sctp/init-tag (-> (sctp/random-int) (bit-and 0xffffffff))
+                                       :sctp/initial-tsn (-> (sctp/random-int) (bit-and 0xffffffff))}))))
     ;; send init-ack
     (dtls/request-ssl-rf
      (comp
       (map (fn [{:context/keys [buf]
+                 {:sctp/keys [cookie init-tag initial-tsn]} :context/sctp
                  :sctp/keys [chunk]
                  :as x}]
              (assoc x
                     :sctp/buf (-> buf (.clear))
-                    :sctp/chunks [{:chunk :init-ack}]
-                    :sctp/cookie (-> (sctp/random-int) (biginteger) (.toByteArray))
-                    :sctp/init-tag (sctp/random-int)
-                    :sctp/initial-tsn (sctp/random-int)
+                    :sctp/chunks [{:chunk :init-ack :chunk-flags 0}]
+                    :sctp/cookie cookie
+                    :sctp/init-tag init-tag
+                    :sctp/initial-tsn initial-tsn
                     :sctp/src (:sctp/src chunk)
                     :sctp/dst (:sctp/dst chunk)
                     :sctp/outbound (:sctp/outbound chunk)
@@ -281,7 +294,6 @@
     (comp
      sctp/sctp-rf
      (map (fn [{:sctp/keys [chunk] :as x}]
-            (def y x)
             (prn ::chunk (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
             x))
      (drop-while (fn [{:sctp/keys [chunk] :as x}]
@@ -291,10 +303,12 @@
    ;; send cookie ack
     (dtls/request-ssl-rf
      (comp
-      (map (fn [{:context/keys [buf chunk] :as x}]
+      (map (fn [{:context/keys [buf chunk]
+                 {:sctp/keys [cookie init-tag initial-tsn]} :context/sctp
+                 :as x}]
              (assoc x
                     :sctp/buf (-> buf (.clear))
-                    :sctp/chunks [{:chunk :cookie-ack}]
+                    :sctp/chunks [{:chunk :cookie-ack :chunk-flags 0}]
                     :sctp/src (:sctp/src chunk)
                     :sctp/dst (:sctp/dst chunk)
                     :sctp/tag (:sctp/init-tag chunk))))
@@ -312,18 +326,112 @@
     (drop-while (fn [{{:keys [reserve commit block decommit] :as bip} :nio/out}]
                   (.hasRemaining (block))))
 
+    ;; data channel open
+    (dtls/receive-ssl-rf
+     (comp
+      sctp/sctp-rf
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (prn ::chunk ::open (->> chunk
+                                       (filter (fn [[k v]]
+                                                 (and
+                                                  (not= k :sctp/chunk)
+                                                  (contains? #{"sctp" "datachannel"} (namespace k)))))
+                                       (into {})))
+             (merge x (->> chunk (sctp/decode-message)))))
+      (take 1)))
+
+    ;; message open
+    (drop-while (fn [{:datachannel/keys [message] :as x}]
+                  (not= message :message/open)))
+
+    ;; send sack
+    ;; send message ack
+    (dtls/request-ssl-rf
+     (comp
+      (map (fn [{:context/keys [buf chunk]
+                 :sctp/keys [tsn]
+                 {:sctp/keys [window]} :context/chunk
+                 {:sctp/keys [cookie init-tag initial-tsn]} :context/sctp
+                 :as x}]
+             (assoc x
+                    :sctp/buf (-> buf (.clear))
+                    :sctp/window window
+                    :sctp/tsn-ack tsn
+                    :sctp/gaps [] :sctp/dups []
+                    :sctp/chunks [{:chunk :sack :chunk-flags 0}{:chunk :data :chunk-flags 3}]
+                    :datachannel/message :message/ack
+                    :sctp/src (:sctp/src chunk)
+                    :sctp/dst (:sctp/dst chunk)
+                    :sctp/tag (:sctp/init-tag chunk)
+                    :sctp/tsn initial-tsn #_(inc initial-tsn))))
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (prn ::chunk ::out (->> x
+                                     (filter (fn [[k v]]
+                                               (and
+                                                (not= k :sctp/chunk)
+                                                (contains? #{"sctp" "datachannel"} (namespace k)))))
+                                     (into {})))
+             x))
+      (map
+       (fn [{:stun/keys [buf] :as x}]
+         (assoc x :http/req [(sctp/encode x)])))))
+
+    ;; receive sack for message ack
+    (dtls/receive-ssl-rf
+     (comp
+      sctp/sctp-rf
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (prn ::chunk (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
+             x))
+      (take 1)))
+
+    ;; heartbeat
     (dtls/receive-ssl-rf
      (comp
       sctp/sctp-rf
       (map (fn [{:sctp/keys [chunk] :as x}]
              (def y x)
-             (prn ::chunk (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
+             (prn ::chunk ::second (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
              x))
-      (drop-while (fn [{:sctp/keys [chunk] :as x}]
-                    (nil? chunk)))
       (take 1)))
 
-   #_(rf/repeatedly-rf
+    ;; heartbeat ack
+    (dtls/request-ssl-rf
+     (comp
+      (map (fn [{:context/keys [buf chunk]
+                 :sctp/keys [tsn heartbeat]
+                 {:sctp/keys [window]} :context/chunk
+                 {:sctp/keys [cookie init-tag initial-tsn]} :context/sctp
+                 :as x}]
+             (assoc x
+                    :sctp/buf (-> buf (.clear))
+                    :sctp/chunks [{:chunk :heartbeat-ack :chunk-flags 0}]
+                    :sctp/src (:sctp/src chunk)
+                    :sctp/dst (:sctp/dst chunk)
+                    :sctp/tag (:sctp/init-tag chunk))))
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (prn ::chunk ::out (->> x
+                                     (filter (fn [[k v]]
+                                               (and
+                                                (not= k :sctp/chunk)
+                                                (contains? #{"sctp" "datachannel"} (namespace k)))))
+                                     (into {})))
+             x))
+      (map
+       (fn [{:stun/keys [buf] :as x}]
+         (assoc x :http/req [(sctp/encode x)])))))
+
+    ;; heartbeat again?
+    (dtls/receive-ssl-rf
+     (comp
+      sctp/sctp-rf
+      (map (fn [{:sctp/keys [chunk] :as x}]
+             (def y x)
+             (prn ::chunk ::second (->> chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {})))
+             x))
+      (take 1)))
+
+    #_(rf/repeatedly-rf
       (comp
        (dtls/receive-ssl-rf
         (comp
@@ -341,8 +449,11 @@
 
 #_(
    *e
+   *ns*
    (in-ns 'jaq.http.xrf.ice)
    (require 'jaq.http.xrf.ice :reload)
+   (bit-and -542420306  0xffffffff)
+   0x32
    y
    (->> y :context/vacc)
    (->> y :context/packet (map (fn [x] (bit-and x 0xff))))
@@ -350,6 +461,8 @@
    (->> y :sctp/chunk :sctp/random)
    (->> y :sctp/chunk :sctp/chunk)
    (->> y :sctp/chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {}))
+
+   (->> y :context/sctp)
 
    ;; INIT
    ;; sctp header

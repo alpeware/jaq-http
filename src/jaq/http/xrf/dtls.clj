@@ -6,6 +6,7 @@
   (:require
    [clojure.string :as string]
    [clojure.set :as set]
+   [jaq.http.xrf.nio :as nio]
    [jaq.http.xrf.rf :as rf]
    [jaq.http.xrf.params :as params])
   (:import
@@ -489,6 +490,7 @@
         ([] (rf))
         ([acc] (rf acc))
         ([acc {:http/keys [req]
+               :nio/keys [selection-key]
                :ssl/keys [^SSLEngine engine]
                {:keys [reserve commit block decommit] :as bip} :nio/out
                :as x}]
@@ -534,7 +536,15 @@
                    (do
                      (.flip dst)
                      (commit dst)
-                     (recur acc x))))
+                     (let [written (nio/datagram-send! x)]
+                       (prn ::written written)
+                       (if-not (> written 0)
+                         (do
+                           ;; socket buffer full so waiting to clear
+                           (nio/writable! selection-key)
+                           acc)
+                         (do
+                           (recur acc x)))))))
                (->> x
                     (rf acc))))))))))
 
@@ -612,7 +622,9 @@
                  (decommit bb)
                  (.flip scratch)
                  (loop []
-                   (->> (assoc x :byte (.get scratch))
+                   (->> (assoc x
+                               :context/remaining (.remaining scratch)
+                               :byte (.get scratch))
                         (xrf acc))
                    (when (and (.hasRemaining scratch) (not (xrf)))
                      (recur)))

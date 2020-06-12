@@ -34,7 +34,7 @@
    :init-ack 2
    :sack 3
    :heartbeat 4
-   :hearbeat-ack 5
+   :heartbeat-ack 5
    :abort 6
    :shutdown 7
    :shutdown-ack 8
@@ -59,7 +59,8 @@
 
 ;; variable parameters
 (def parameters
-  {:ipv4 5
+  {:heartbeat 1
+   :ipv4 5
    :ipv6 6
    :cookie 7
    :cookie-ttl 9
@@ -93,7 +94,9 @@
    :webrtc/dcep 50
    ;; https://datatracker.ietf.org/doc/html/draft-ietf-rtcweb-data-channel-13
    :webrtc/string 51
-   :webrtc/binary 53})
+   :webrtc/binary 53
+   :webrtc/empty-string 56
+   :webrtc/empty-binary 57})
 
 (def protocol-map
   (->> protocols (map (fn [[k v]] [v k])) (into {})))
@@ -203,7 +206,7 @@
                  tsn (-> (.getInt buf) (bit-and 0xffffffff))
                  stream (-> buf (.getShort) (bit-and 0xffff))
                  sequence (-> buf (.getShort) (bit-and 0xffff))
-                 protocol (-> (.getInt buf) (bit-and 0xffffffff))
+                 protocol (-> buf (.getInt) (bit-and 0xffffffff))
                  data (->> (range)
                            (take (- chunk-length 12))
                            (map (fn [_] (.get buf)))
@@ -211,15 +214,45 @@
                            (doall))]
              (run! (fn [_] (.get buf)) (range chunk-padding))
              (assoc x
-                    :sctp/flags flags
+                    :sctp/data-flags flags
                     :sctp/tsn tsn :sctp/stream stream
-                    :sctp/sequence sequence :sctp/protocol protocol
-                    :sctp/data data)))})
+                    :sctp/sequence sequence :sctp/protocol (get protocol-map protocol)
+                    :sctp/data data)))
+   :sack (fn [{:sctp/keys [buf tsn] :as x}]
+           (let [tsn-ack (-> (.getInt buf) (bit-and 0xffffffff))
+                 window (-> (.getInt buf) (bit-and 0xffffffff))
+                 gap-blocks (-> buf (.getShort) (bit-and 0xffff))
+                 tsn-dups (-> buf (.getShort) (bit-and 0xffff))
+                 gaps (->> (range)
+                           (take (* gap-blocks 2))
+                           (map (fn [_] (.getShort buf)))
+                           (map (fn [e] (bit-and e 0xffff)))
+                           #_(map (fn [e] (+ e tsn-ack)))
+                           (partition 2)
+                           ;; TODO: need the complement between tsn and tsn-ack to get gaps
+                           #_(mapcat (fn [[start end]]
+                                       (-> start (inc) (range end))))
+                           (into [])
+                           (doall))
+                 dups (->> (range)
+                           (take tsn-dups)
+                           (map (fn [_] (.getInt buf)))
+                           (map (fn [e] (bit-and e 0xffffffff)))
+                           (doall))]
+             (assoc x
+                    :sctp/tsn-ack tsn-ack :sctp/window window
+                    :sctp/gaps gaps
+                    :sctp/dups dups)))
+   :heartbeat (fn [{:sctp/keys [buf chunk-length] :as x}]
+                (let []
+                  x))})
 
 #_(
    (in-ns 'jaq.http.xrf.sctp)
    *e
    *ns*
+
+   (range 2 4)
 
    (->> {:unordered false :begining false :ending true}
         (remove (fn [[k v]] (false? v)))
@@ -229,7 +262,15 @@
    )
 
 (def decode-opt-map
-  {:ipv4 (fn [{:sctp/keys [param-length param-padding buf] :as x}]
+  {:heartbeat (fn [{:sctp/keys [param-length param-padding buf] :as x}]
+                (let [heartbeat (->> (range)
+                                     (take param-length)
+                                     (map (fn [_] (.get buf)))
+                                     (map (fn [e] (bit-and e 0xff)))
+                                     (doall))]
+                  (run! (fn [_] (.get buf)) (range param-padding))
+                  (assoc x :sctp/heartbeat heartbeat)))
+   :ipv4 (fn [{:sctp/keys [param-length param-padding buf] :as x}]
            (let [ip (string/join "."
                                  (->> (range)
                                       (take param-length)
@@ -365,72 +406,95 @@
     (->> (assoc x :sctp/chunk k)
          (f))))
 
-
 (def ^Charset utf8
   (Charset/forName "UTF-8"))
 
-(defn decode-message
-  "      0                   1                   2                   3
-      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |  Message Type |  Channel Type |            Priority           |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |                    Reliability Parameter                      |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     |         Label Length          |       Protocol Length         |
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     /                                                               /
-     |                             Label                             |
-     /                                                               /
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     /                                                               /
-     |                            Protocol                           |
-     /                                                               /
-     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+"
-  [{:sctp/keys [buf] :as x}]
-  (let [message-type (-> buf (.get) (bit-and 0xff))
-        channel-type (-> buf (.get) (bit-and 0xff))
-        priority (-> buf (.getShort) (bit-and 0xffff))
-        reliability (-> buf (.getInt) (bit-and 0xffffffff))
-        label-length (-> buf (.getShort) (bit-and 0xffff))
-        protocol-length (-> buf (.getShort) (bit-and 0xffff))
-        label (-> buf (.slice) (.limit label-length) (.rewind) (->> (.decode utf8) (.toString)))
-        _ (-> buf (.position (+ label-length (.position buf))))
-        protocol (->> (range)
-                      (take protocol-length)
-                      (map (fn [_] (.get buf)))
-                      (map (fn [e] (bit-and e 0xff)))
-                      (into [])
-                      (doall))]
-    (assoc x
-           :sctp/message (get message-map message-type)
-           :sctp/channel (get channel-map channel-type)
-           :datachannel/priority priority
-           :datachannel/reliability reliability
-           :datachannel/label label
-           :datachannel/label-length label-length
-           :datachannel/protocol protocol)))
+(def decode-message-map
+  {:message/ack (fn [{:sctp/keys [buf] :as x}]
+                  x)
+   :message/open (fn [{:sctp/keys [buf] :as x}]
+                   (let [channel-type (-> buf (.get) (bit-and 0xff))
+                         priority (-> buf (.getShort) (bit-and 0xffff))
+                         reliability (-> buf (.getInt) (bit-and 0xffffffff))
+                         label-length (-> buf (.getShort) (bit-and 0xffff))
+                         protocol-length (-> buf (.getShort) (bit-and 0xffff))
+                         label (-> buf (.slice) (.limit label-length) (.rewind) (->> (.decode utf8) (.toString)))
+                         _ (-> buf (.position (+ label-length (.position buf))))
+                         ;; TODO: is this used for anything?
+                         protocol (->> (range)
+                                       (take protocol-length)
+                                       (map (fn [_] (.get buf)))
+                                       (map (fn [e] (bit-and e 0xff)))
+                                       (into [])
+                                       (doall))]
+                     (assoc x
+                            :sctp/channel (get channel-map channel-type)
+                            :datachannel/priority priority
+                            :datachannel/reliability reliability
+                            :datachannel/label label
+                            :datachannel/label-length label-length
+                            :datachannel/protocol protocol)))})
+
+(def decode-protocol-map
+  {:webrtc/dcep (fn [{:sctp/keys [buf] :as x}]
+                  (let [type (-> buf (.get) (bit-and 0xff))
+                        k (get message-map type :unknown)
+                        f (get decode-message-map k)]
+                    (prn ::processing ::message type k)
+                    (->> (assoc x
+                                :datachannel/message-type type
+                                :datachannel/message k)
+                         (f))))
+   :webrtc/string (fn [{:sctp/keys [buf] :as x}]
+                    (let [payload (->> buf (.decode utf8) (.toString))]
+                      (assoc x :datachannel/payload payload)))
+   :webrtc/string-empty (fn [{:sctp/keys [buf] :as x}]
+                          (let []
+                            (assoc x :datachannel/payload "")))
+   :webrtc/binary (fn [{:sctp/keys [buf] :as x}]
+                    (let [payload (loop [acc []]
+                                    (if-not (.hasRemaining buf)
+                                      acc
+                                      (recur (conj acc (-> buf (.get) (bit-and 0xff))))))]
+                      (assoc x :datachannel/payload payload)))
+   :webrtc/binary-empty (fn [{:sctp/keys [buf] :as x}]
+                          (let []
+                            (assoc x :datachannel/payload nil)))})
 
 #_(
 
+   )
+
+(defn decode-message [{:sctp/keys [data protocol] :as x}]
+  (let [buf (->> data (byte-array) (ByteBuffer/wrap))
+        f (get decode-protocol-map protocol)]
+    (->> (assoc x :sctp/buf buf)
+         (f))))
+
+#_(
+
+   (let [protocol (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/protocol)
+         data (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/data)]
+     (->> {:sctp/protocol (get protocol-map protocol)
+           :sctp/data data}
+          (decode-message))
+     )
+
    (->> jaq.http.xrf.ice/y :context/packet (map (fn [x] (bit-and x 0xff))))
    (let [buf (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/data (byte-array) (ByteBuffer/wrap))]
-     #_(->> (range) (take 12) (map (fn [_] (.get buf))) (doall))
-     #_(-> buf (.duplicate) (.limit 4) (.rewind) (->> (.decode utf8) (.toString)))
-     #_(-> buf (.duplicate) (.limit 4) (.rewind) )
-     #_(->> (map (fn [_] (.get buf))) (map char) (apply str) (doall))
-     #_buf
-     (decode-message {:sctp/buf buf}))
+     (decode-protocol {:sctp/buf buf}))
 
-   (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/data (drop 12) (map char) (apply str))
+   (->> jaq.http.xrf.ice/y :sctp/chunk (filter (fn [[k v]] (= (namespace k) "sctp"))) (into {}))
 
    (let [buf (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/data (drop 12) (byte-array) (ByteBuffer/wrap))]
      (-> buf (.duplicate) (.limit 4) (.rewind) (->> (.decode utf8) (.toString)))
      )
 
    (let [buf (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/data (byte-array) (ByteBuffer/wrap))]
-     (.position buf 12)
-     (-> buf (.slice) (.limit 4) (.rewind) (->> (.decode utf8) (.toString)))
+     (loop [acc []]
+       (if-not (.hasRemaining buf)
+         acc
+         (recur (conj acc (-> buf (.get) (bit-and 0xff))))))
      )
 
    )
@@ -617,12 +681,16 @@
    chunk-rf
    (drop 1)
    (rf/one-rf :sctp/chunk
-              (map (fn [{:sctp/keys [buf] :as x}]
-                     (loop [x' (->> x (decode-params))]
-                       (prn buf)
-                       (if-not (.hasRemaining buf)
-                         x'
-                         (recur (decode-opt-params x')))))))
+              (comp
+               (map (fn [{:context/keys [remaining] :as x}]
+                      (prn ::processed ::chunk remaining)
+                      x))
+               (map (fn [{:sctp/keys [buf] :as x}]
+                      (loop [x' (->> x (decode-params))]
+                        (prn buf)
+                        (if-not (.hasRemaining buf)
+                          x'
+                          (recur (decode-opt-params x'))))))))
    padding-rf))
 
 #_(
@@ -651,6 +719,67 @@
     (let [padding (-> length (mod -4) -)]
       (run! (fn [_] (.put buf (byte 0))) (range padding)))))
 
+(def encode-message-map
+  {:message/open (fn [{:sctp/keys [buf channel]
+                       :datachannel/keys [priority reliability label protocol]
+                       :as x}]
+                   (let [label-length (count label)
+                         protocol-length (count protocol)]
+                     (-> buf
+                         (.put (->> channel (get channels) (byte)))
+                         (.putShort priority)
+                         (.putInt reliability)
+                         (.putShort label-length)
+                         (.putShort protocol-length)
+                         (.put (->> label (.getBytes)))
+                         (.put (->> protocol (byte-array))))))
+   :message/ack (fn [{:sctp/keys [buf]}]
+                  buf)})
+
+#_(
+
+   (let [buf (ByteBuffer/allocate 10)
+         s "foo"
+         p [0 1 2 3]]
+     #_(->> s (.getBytes) (.put buf))
+     (->> p (byte-array) (.put buf)))
+   (get messages :message/ack)
+   )
+
+(def encode-protocol-map
+  {:webrtc/dcep (fn [{:sctp/keys [buf]
+                      :datachannel/keys [message]
+                      :as x}]
+                  (let [f (get encode-message-map message)
+                        type (get messages message)]
+                    (prn ::processing ::message type)
+                    (-> buf
+                        (.put (byte type)))
+                    (->> x (f))))
+   :webrtc/string (fn [{:sctp/keys [buf]
+                        :datachannel/keys [payload]
+                        :as x}]
+                    (-> buf (.put (.getBytes payload))))
+   :webrtc/string-empty (fn [{:sctp/keys [buf]
+                              :datachannel/keys [payload]
+                              :as x}]
+                          buf)
+   :webrtc/binary (fn [{:sctp/keys [buf]
+                        :datachannel/keys [payload]
+                        :as x}]
+                    (-> buf (.put payload)))
+   :webrtc/binary-empty (fn [{:sctp/keys [buf] :as x}]
+                          buf)})
+
+#_(
+
+   (->> jaq.http.xrf.ice/y
+        (filter (fn [[k v]] (and
+                             #_(not= k :sctp/chunk)
+                             (contains? #{"sctp" "datachannel"} (namespace k)))))
+        (into {}))
+   )
+
 (def encode-map
   {:init-ack (fn [{:sctp/keys [buf chunk init-tag window outbound inbound cookie initial-tsn]
                    :as x}]
@@ -671,7 +800,53 @@
                     (-> buf (.put cookie))))
    :cookie-ack (fn [{:sctp/keys [buf chunk] :as x}]
                  (let []
-                   buf))})
+                   buf))
+   :data (fn [{:sctp/keys [buf data-flags tsn stream sequence tsn protocol payload]
+               :as x}]
+           (let [start (-> buf (.position) (+ 4 2 2 4))
+                 f (get encode-protocol-map protocol)]
+             (-> buf
+                 (.putInt tsn)
+                 (.putShort stream)
+                 (.putShort sequence)
+                 (.putInt (get protocols protocol)))
+             ;; encode payload
+             (f x)
+             (let [padding (-> buf (.position) (- start) (mod -4) -)]
+               (prn ::data ::padding padding)
+               (run! (fn [_] (.put buf (byte 0))) (range padding)))))
+   ;; TODO: send SACK for received message
+   ;; TODO: process multiple incoming chunks
+   :sack (fn [{:sctp/keys [buf tsn tsn-ack window gaps dups]
+               :as x}]
+           (let [gap-blocks (count gaps)
+                 tsn-dups (count dups)]
+             (-> buf
+                 (.putInt tsn-ack)
+                 (.putInt window)
+                 (.putShort gap-blocks)
+                 (.putShort tsn-dups))
+             ;; gap blocks
+             (doseq [[start end] gaps]
+               (-> buf
+                   (.putShort start)
+                   (.putShort end)))
+             ;; tsn dups
+             (doseq [dup dups]
+               (.putInt buf dup))))
+   :heartbeat-ack (fn [{:sctp/keys [buf heartbeat] :as x}]
+                    (let [length (count heartbeat)
+                          val (->> heartbeat (byte-array))]
+                      (opt-param! buf :heartbeat length val false)))})
+
+#_(
+   *ns*
+   (in-ns 'jaq.http.xrf.sctp)
+   ;; gap blocks: report on tsns received relative to tsn ack
+   ;; so really the complement of the missing ones
+   ;; TODO: figure out a better way to handle
+
+   )
 
 (defn encode-chunk
   "        0                   1                   2                   3
@@ -685,23 +860,18 @@
        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+"
   [{:sctp/keys [buf chunk chunk-flags]
     :as x}]
-  (let [chunk-flags (or chunk-flags 0)]
-    (prn ::chunk (get chunks chunk) chunk chunk-flags)
-    (-> buf
-        (.put (-> (get chunks chunk) (byte)))
-        (.put (byte chunk-flags))
-        (.mark)
-        ;; dummy length
-        (.putShort 0))
-    x))
+  (prn ::chunk (get chunks chunk) chunk chunk-flags)
+  (-> buf
+      (.put (-> (get chunks chunk) (byte)))
+      (.put (byte chunk-flags))
+      (.mark)
+      ;; dummy length
+      (.putShort 0))
+  x)
 
 #_(
-   (encode-chunk {})
+   (in-ns 'jaq.http.xrf.sctp)
 
-   (let [{:sctp/keys [buf chunk chunk-flags]
-          :or {chunk-flags 0}
-          :as x} {}]
-     chunk-flags)
    )
 
 (defn encode
@@ -724,14 +894,14 @@
       (.mark)
       ;; fill in checksum at the end
       (.putInt 0))
-  (doseq [{:keys [chunk chunk-flags params]} chunks]
+  (doseq [{:keys [chunk chunk-flags]} chunks]
     (let [pos (.position buf)
           bb (.duplicate buf)]
-      (prn ::encoding chunk)
+      (prn ::encoding chunk chunk-flags)
       (->> (assoc x
                   :sctp/buf bb
                   :sctp/chunk-flags chunk-flags
-                  :sctp/chunk chunk :sctp/params params)
+                  :sctp/chunk chunk)
            (encode-chunk)
            (conj [])
            (apply (get encode-map chunk)))
@@ -763,22 +933,6 @@
 
    (in-ns 'jaq.http.xrf.sctp)
 
-   ;; crc32c debugging
-   (->> jaq.http.xrf.ice/y :context/packet (map (fn [x] (bit-and x 0xff))))
-   ;; 1744600416
-   (def b [19 136 19 136 0 0 0 0 0 0 0 0 1 0 0 86 101 10 120 33 0 2 0 0 4 0 8 0 74 222 36 161 192 0 0 4 128 8 0 9 192 15 193 128 130 0 0 0 128 2 0 36 28 71 10 84 123 238 211 123 100 197 217 81 197 253 62 97 20 43 247 11 115 123 68 17 90 62 150 66 197 130 3 10 128 4 0 6 0 1 0 0 128 3 0 6 128 193 0 0])
-   (def a *1)
-   (def b (concat (take 8 a) [0 0 0 0] (->> a (drop 12))))
-   (let [crc32c (CRC32C.)
-         buf (->> b (byte-array))]
-     (.update crc32c buf)
-     (-> crc32c (.getValue))
-     )
-   (->> b (string/join ", "))
-
-   (let [buf (-> [59 96 207 217] (reverse) (byte-array) (ByteBuffer/wrap) #_(.order ByteOrder/LITTLE_ENDIAN))]
-     (bit-and 0xffffffff (.getInt buf)))
-
    (let [buf (ByteBuffer/allocate 100)]
      (-> buf
          (.putShort 0x0102)
@@ -791,12 +945,7 @@
    *e
    )
 
-#_(
 
-   (->> jaq.http.xrf.ice/y :sctp/chunk (filter (fn [[k v]] (and
-                                                #_(not= k :sctp/chunk)
-                                                (= (namespace k) "sctp")))) (into {}))
-   )
 #_(
 
    (let [buf (ByteBuffer/allocate 1500)
@@ -804,7 +953,15 @@
          cookie (-> (random-int) (biginteger) (.toByteArray))]
      (encode {:sctp/buf buf :sctp/src 5000 :sctp/dst 5000
               :sctp/tag tag
-              :sctp/chunks [{:chunk :cookie-ack}]})
+              :sctp/chunks [{:chunk :cookie-ack :chunk-flags 0}]})
+     (->> (range) (take (.limit buf)) (map (fn [_] (-> (.get buf) (bit-and 0xff))))))
+
+   (let [buf (ByteBuffer/allocate 1500)
+         tag (random-int)
+         cookie (-> (random-int) (biginteger) (.toByteArray))]
+     (encode {:sctp/buf buf :sctp/src 5000 :sctp/dst 5000 :sctp/tag tag
+              :sctp/heartbeat (range 10)
+              :sctp/chunks [{:chunk :heartbeat-ack :chunk-flags 0}]})
      (->> (range) (take (.limit buf)) (map (fn [_] (-> (.get buf) (bit-and 0xff))))))
 
    (let [buf (ByteBuffer/allocate 1500)
@@ -830,6 +987,37 @@
               :sctp/cookie cookie :sctp/initial-tsn initial-tsn
               :sctp/chunks [{:chunk :init-ack}]})
      (->> (range) (take (.limit buf)) (map (fn [_] (-> (.get buf) (bit-and 0xff))))))
+
+   (let [buf (ByteBuffer/allocate 1500)
+         x (->> jaq.http.xrf.ice/y
+                (filter (fn [[k v]] (and
+                                     (not= k :sctp/buf)
+                                     (contains? #{"sctp" "datachannel"} (namespace k)))))
+                (into {}))]
+     (->> (assoc x
+                 :datachannel/message :message/ack #_(:sctp/message x)
+                 :sctp/buf buf
+                 :sctp/chunks [{:chunk :data :chunk-flags 3}])
+          (encode))
+     (into []
+           (comp
+            header-rf
+            (drop 1)
+            chunk-rf
+            #_(drop 1)
+            (map (fn [{:sctp/keys [buf] :as x}]
+                   (loop [x' (->> x (decode-params))]
+                     (prn buf)
+                     (if-not (.hasRemaining buf)
+                       x'
+                       (recur (decode-opt-params x'))))))
+            (map (fn [{:sctp/keys [chunk] :as x}]
+                   (merge x (->> x (decode-message))))))
+           (->> (range)
+                (take (.limit buf))
+                (map (fn [_] (-> (.get buf) (bit-and 0xff))))
+                (map (fn [x] {:byte x}))))
+     #_(->> (range) (take (.limit buf)) (map (fn [_] (-> (.get buf) (bit-and 0xff))))))
 
    (let [buf (ByteBuffer/allocate 1500)
          tag (random-int)
@@ -861,6 +1049,40 @@
                 (take (.limit buf))
                 (map (fn [_] (-> (.get buf) (bit-and 0xff))))
                 (map (fn [x] {:byte x}))))
+     )
+
+   (let [buf (ByteBuffer/allocate 1500)
+         tag (random-int)
+         init-tag (random-int)
+         window 1500
+         outbound 1024
+         inbound 1024
+         cookie (-> (random-int) (biginteger) (.toByteArray))
+         initial-tsn (random-int)]
+     (encode {:sctp/buf buf :sctp/src 5000 :sctp/dst 5000
+              :sctp/tag tag
+              :sctp/init-tag init-tag :sctp/window window
+              :sctp/outbound outbound :sctp/inbound inbound
+              :sctp/cookie cookie :sctp/initial-tsn initial-tsn
+              :sctp/tsn-ack tag
+              :sctp/gaps [[2 3] [5 6]] :sctp/dups [init-tag tag]
+              :sctp/chunks [{:chunk :sack :chunk-flags 0}{:chunk :init-ack :chunk-flags 0}]})
+     #_(into []
+             (comp
+              header-rf
+              (drop 1)
+              chunk-rf
+              #_(drop 1)
+              (map (fn [{:sctp/keys [buf] :as x}]
+                     (loop [x' (->> x (decode-params))]
+                       (prn buf)
+                       (if-not (.hasRemaining buf)
+                         x'
+                         (recur (decode-opt-params x')))))))
+             (->> (range)
+                  (take (.limit buf))
+                  (map (fn [_] (-> (.get buf) (bit-and 0xff))))
+                  (map (fn [x] {:byte x}))))
      )
 
    *e

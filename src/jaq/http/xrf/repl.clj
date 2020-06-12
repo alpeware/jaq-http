@@ -960,7 +960,7 @@
    (->> x :nio/selector
         (.keys)
         (filter (fn [sk]
-                  (-> sk (.channel) (.socket) (.getLocalPort) (= 58528))))
+                  (-> sk (.channel) (.socket) (.getLocalPort) (= 50820))))
         (map (fn [sk]
                (-> sk (.channel) (.close))
                (-> sk (.cancel))))
