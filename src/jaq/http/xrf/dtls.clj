@@ -622,10 +622,11 @@
                  (decommit bb)
                  (.flip scratch)
                  (loop []
-                   (->> (assoc x
-                               :context/remaining (.remaining scratch)
-                               :byte (.get scratch))
-                        (xrf acc))
+                   (let [b (.get scratch)]
+                     (->> (assoc x
+                                 :context/remaining (.remaining scratch)
+                                 :byte b)
+                          (xrf acc)))
                    (when (and (.hasRemaining scratch) (not (xrf)))
                      (recur)))
                  (cond

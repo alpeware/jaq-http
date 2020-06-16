@@ -60,14 +60,14 @@
               (empty? @vacc)
               (nil? @val)
               (contains? #{10 13} byte))
-             (rf acc)
+             acc
 
              (and
               @val
               (contains? #{10 13} byte))
              (do
                (vreset! done true)
-               (rf acc))
+               acc)
 
              (and
               (nil? @val)
@@ -88,13 +88,13 @@
                                (Integer/parseInt 16))})
                (vreset! vacc [])
                #_(vreset! done true)
-               (rf acc))
+               acc)
 
              :else
              (do
                #_(prn (char byte))
                (vswap! vacc conj byte)
-               (rf acc)))
+               acc))
            (rf acc x)))))))
 
 #_(
@@ -142,7 +142,7 @@
               (not @done)
               (= @len 1)
               (contains? #{13 10} byte))
-             (rf acc)
+             acc
 
              (and
               (not @done)
@@ -152,7 +152,7 @@
                (->> content-length (ByteBuffer/allocate) (vreset! buf))
                (.put @buf byte)
                (vswap! len inc)
-               (rf acc))
+               acc)
 
              (and
               @buf
@@ -162,7 +162,7 @@
                #_(->> char (vswap! chunk conj))
                (.put @buf byte)
                (vswap! len inc)
-               (rf acc))
+               acc)
 
              #_(and
                 @buf
@@ -205,7 +205,7 @@
                (->> content-length (ByteBuffer/allocate) (vreset! buf))
                (.put @buf byte)
                (vswap! len inc)
-               (rf acc))
+               acc)
 
              (and
               @buf
@@ -216,7 +216,7 @@
                #_(prn @len)
                (.put @buf byte)
                (vswap! len inc)
-               (rf acc))
+               acc)
 
              (and
               (not @done)

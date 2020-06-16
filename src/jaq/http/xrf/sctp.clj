@@ -159,6 +159,7 @@
         chunk-flags (-> buf (.get) (bit-and 0xff))
         chunk-length (-> buf (.getShort) (bit-and 0xffff))
         chunk-padding (-> chunk-length (mod -4) -)]
+    (prn ::chunk chunk-type chunk-flags chunk-length chunk-padding)
     (assoc x
            :sctp/chunk-type chunk-type
            :sctp/chunk-flags chunk-flags
@@ -212,7 +213,7 @@
                            (map (fn [_] (.get buf)))
                            (map (fn [e] (bit-and e 0xff)))
                            (doall))]
-             (run! (fn [_] (.get buf)) (range chunk-padding))
+             #_(run! (fn [_] (.get buf)) (range chunk-padding))
              (assoc x
                     :sctp/data-flags flags
                     :sctp/tsn tsn :sctp/stream stream
@@ -504,7 +505,7 @@
    (def y jaq.http.xrf.ice/y)
 
    (->> y :context/vacc)
-   (let [buf (->> y :context/vacc
+   (let [buf (->> y :context/packet
                   (byte-array)
                   (ByteBuffer/wrap))
          x {:sctp/buf buf}]
@@ -514,14 +515,20 @@
           ;; 1st chunk
           (decode-chunk)
           (decode-params)
-          (decode-opt-params)
-          (decode-opt-params)
-          (decode-opt-params)
-          (decode-opt-params)
-          (decode-opt-params)
           ;; end 1st chunk
-          )
-     )
+          (decode-chunk)
+          (decode-params)
+          #_(decode-opt-params)
+          ))
+
+   (into [] (comp
+             (map (fn [x] {:byte x}))
+             header-rf
+             (drop 1)
+             chunks-rf
+             (take 1))
+         (-> y :context/packet))
+
    (into [] (comp
              (map (fn [x] {:byte x}))
              header-rf
@@ -613,6 +620,7 @@
                        (assoc x :sctp/buf)
                        (decode-chunk)
                        (vreset! val))
+                  #_(prn ::chunk ::header @val)
                   (rf acc (assoc-fn x)))))
 
             :else
@@ -637,6 +645,7 @@
               (if-not (= (count @vacc) chunk-length)
                 acc
                 (do
+                  (prn ::chunked)
                   (->> @vacc
                        (byte-array)
                        (ByteBuffer/wrap)
@@ -652,7 +661,9 @@
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:sctp/keys [chunk-padding] :as x}]
+        ([acc {:keys [byte]
+               :sctp/keys [chunk-padding] :as x}]
+         (prn ::byte byte)
          (cond
            (< @cnt chunk-padding)
            (do
@@ -663,6 +674,95 @@
 
            :else
            (rf acc x)))))))
+
+(def chunks-rf
+  (fn [rf]
+    (let [chunks (volatile! [])
+          done (volatile! false)
+          xf (rf/repeatedly-rf (comp chunk-rf
+                                     #_(drop 1)
+                                     (rf/one-rf :sctp/chunk
+                                                (comp
+                                                 (map (fn [{:context/keys [remaining]
+                                                            :sctp/keys [chunk-padding]
+                                                            :as x}]
+                                                        (prn ::processed ::chunk remaining chunk-padding)
+                                                        x))
+                                                 (map (fn [{:sctp/keys [buf] :as x}]
+                                                        (loop [x' (->> x (decode-params))]
+                                                          (prn buf)
+                                                          (if-not (.hasRemaining buf)
+                                                            x'
+                                                            (recur (decode-opt-params x'))))))
+                                                 (map (fn [{:sctp/keys [chunk] :as x}]
+                                                        (if (= chunk :data)
+                                                          (decode-message x)
+                                                          x)))))
+                                     padding-rf
+                                     (map (fn [{:context/keys [remaining]
+                                                :sctp/keys [chunk-padding]
+                                                :as x}]
+                                            (prn ::done ::chunk remaining chunk-padding)
+                                            (vswap! chunks conj x)
+                                            x))))
+          xrf (xf (rf/result-fn))
+          assoc-fn (fn [x]
+                     (assoc x :sctp/chunks @chunks))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:keys [byte]
+               :context/keys [remaining]
+               :as x}]
+         (if @done
+           (->> (assoc-fn x)
+                (rf acc))
+           (do
+             (xrf acc x)
+             (if (= 0 remaining)
+               (do
+                 (prn ::done ::chunks remaining)
+                 (vreset! done true)
+                 (->> (assoc-fn x)
+                      (rf acc)))
+               acc))))))))
+
+#_(
+   *ns*
+   (in-ns 'jaq.http.xrf.sctp)
+
+   (def y jaq.http.xrf.ice/y)
+
+   (->> jaq.http.xrf.ice/y :context/packet (map (fn [x] (bit-and x 0xff))))
+   (->> (interleave
+         (->> y :context/packet (count) (range) (reverse))
+         (->> y :context/packet))
+        (into [] (comp
+                  (partition-all 2)
+                  (map (fn [[y x]] {:byte x :context/remaining y}))
+                  header-rf
+                  (drop 1)
+                  chunks-rf))
+        (first)
+        :sctp/chunks
+        (map :sctp/chunk)
+        #_(map (fn [{:sctp/keys [chunk]}] chunk))
+        (filter (fn [{:datachannel/keys [message]}] (= message :message/open)))
+        (map :sctp/protocol)
+        #_(first))
+   )
+
+
+#_(defn chunks-rf [xf]
+    (fn [rf]
+      (let [xrf (xf (result-fn))]
+        (fn
+          ([] (rf))
+          ([acc] (rf acc))
+          ([acc {:keys [byte]
+                 :sctp/keys [chunk-padding] :as x}]
+           (vswap! packet conj byte)
+           (rf acc (assoc x :context/packet @packet)))))))
 
 ;; TODO: multiple chunks
 (def sctp-rf
@@ -678,20 +778,22 @@
           (rf acc (assoc x :context/packet @packet))))))
    header-rf
    (drop 1)
-   chunk-rf
-   (drop 1)
-   (rf/one-rf :sctp/chunk
-              (comp
-               (map (fn [{:context/keys [remaining] :as x}]
-                      (prn ::processed ::chunk remaining)
-                      x))
-               (map (fn [{:sctp/keys [buf] :as x}]
-                      (loop [x' (->> x (decode-params))]
-                        (prn buf)
-                        (if-not (.hasRemaining buf)
-                          x'
-                          (recur (decode-opt-params x'))))))))
-   padding-rf))
+   chunks-rf
+   #_(comp
+      chunk-rf
+      (drop 1)
+      (rf/one-rf :sctp/chunk
+                 (comp
+                  (map (fn [{:context/keys [remaining] :as x}]
+                         (prn ::processed ::chunk remaining)
+                         x))
+                  (map (fn [{:sctp/keys [buf] :as x}]
+                         (loop [x' (->> x (decode-params))]
+                           (prn buf)
+                           (if-not (.hasRemaining buf)
+                             x'
+                             (recur (decode-opt-params x'))))))))
+      padding-rf)))
 
 #_(
    *ns*
@@ -725,6 +827,8 @@
                        :as x}]
                    (let [label-length (count label)
                          protocol-length (count protocol)]
+                     (def y x)
+                     (prn ::message ::open)
                      (-> buf
                          (.put (->> channel (get channels) (byte)))
                          (.putShort priority)
@@ -737,7 +841,11 @@
                   buf)})
 
 #_(
+   (-> (get encode-message-map :message/open) (apply [y]))
+   (-> y :datachannel/priority)
+   *e
 
+   (get channels :datachannel/reliable)
    (let [buf (ByteBuffer/allocate 10)
          s "foo"
          p [0 1 2 3]]
@@ -772,7 +880,8 @@
                           buf)})
 
 #_(
-
+   (in-ns 'jaq.http.xrf.sctp)
+   (get messages :message/open)
    (->> jaq.http.xrf.ice/y
         (filter (fn [[k v]] (and
                              #_(not= k :sctp/chunk)
@@ -801,7 +910,7 @@
    :cookie-ack (fn [{:sctp/keys [buf chunk] :as x}]
                  (let []
                    buf))
-   :data (fn [{:sctp/keys [buf data-flags tsn stream sequence tsn protocol payload]
+   :data (fn [{:sctp/keys [buf tsn stream sequence protocol]
                :as x}]
            (let [start (-> buf (.position) (+ 4 2 2 4))
                  f (get encode-protocol-map protocol)]

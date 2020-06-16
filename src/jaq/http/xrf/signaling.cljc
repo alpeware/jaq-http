@@ -368,13 +368,13 @@
         (map (fn [{:rtc/keys [channel] :as x}]
                (assoc x
                       :event/src channel
-                      :event/type "open")))
+                      :event/type "message")))
         (html/register-rf
          (comp
-          (map (fn [{:event/keys [target]
+          (map (fn [{:event/keys [target event]
                      :rtc/keys [channel]
                      :as x}]
-                 (.info js/console "open" (-> channel))
+                 (.info js/console "message" (-> event (.-event_) (.-data)))
                  x))))
         ;; create offer
         (async-rf (comp
@@ -607,7 +607,7 @@
 
    (-> x :rtc/channel (.-id))
    (-> x :rtc/channel (.-label))
-   (-> x :rtc/channel (.send "foo"))
+   (-> x :rtc/channel (.send "alpeware"))
 
    (-> x :component/state (deref) (clj->js) (JSON/stringify))
    (->> x :component/state (deref)
