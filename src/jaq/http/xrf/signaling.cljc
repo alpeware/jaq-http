@@ -61,7 +61,7 @@
                     [k v])))
            (into {}))))
 
-(defn sdp [{:sdp/keys [port ip ufrag pwd fingerprint]
+(defn sdp [{:sdp/keys [port host ip ufrag pwd fingerprint]
             :or {ip "0.0.0.0" ufrag "abcd" pwd "1234567890123456789012"}
             :as x}]
   (->> {:v ["0"] ;; version
@@ -76,7 +76,7 @@
             :mid ["0"]
             :sctp-port ["5000"]
             ;; foundation component transport priority address port type
-            :candidate [(str "foundation 1 udp 2130706431 192.168.1.140 " port " typ host")]
+            :candidate [(str "foundation 1 udp 2130706431 " host " " port " typ host")]
             :fingerprint [(str "sha-256 " (string/join ":" fingerprint))]}}
        ;; need to order the keys unfortunately
        ((fn [{:keys [v o s t m c a] :as sdp}]
@@ -459,6 +459,10 @@
         (rf/one-rf :ssl/cert (comp
                               (map (fn [x] (assoc x :ssl/cert (dtls/self-cert :cert/alias "server"))))
                               (map :ssl/cert)))
+        (rf/one-rf :context/remote-password (comp
+                                             (map (fn [{:http/keys [json]}]
+                                                    (->> json :sdp :sdp (parse-sdp) :a
+                                                         :ice-pwd (first))))))
         (map (fn [{:http/keys [json]
                    :ssl/keys [cert]
                    {:cert/keys [fingerprint]} :ssl/cert
@@ -472,40 +476,142 @@
                       :stun/password "1234567890123456789012"
                       :stun/ufrag "abcd"
                       ;;:http/local-port 2230
-                      :context/remote-password (->> json :sdp :sdp (parse-sdp) :a
-                                                    :ice-pwd (first)))))
+                      )))
+        ;; create UDP channel and wait for STUN results
+        (fn [rf]
+          (let [once (volatile! false)
+                buf (ByteBuffer/allocate 150)
+                client (volatile! nil)
+                yf (comp
+                    #_(map (fn [x]
+                             (assoc x :context/buf buf)))
+                    nio/datagram-read-rf
+                    (map (fn [{:nio/keys [address] :as x}]
+                           (if address
+                             (assoc x
+                                    :http/host (-> address (.getAddress) (.getHostAddress))
+                                    :http/port (.getPort address))
+                             x)))
+                    nio/datagram-write-rf
+                    ice/simple-stun-rf
+                    ice/dtls-rf)
+                yrf (yf (rf/result-fn))
+                xf (comp
+                    (ice/data-channel-rf
+                     (comp
+                      #_(map (fn [x]
+                               (assoc x :context/buf buf)))
+                      stun/stun-host-rf
+                      stun/discover-rf
+                      (fn [rf]
+                        (let [once (volatile! nil)]
+                          (fn
+                            ([] (rf))
+                            ([acc] (rf acc))
+                            ([acc {:context/keys [callback-rf callback-x]
+                                   :nio/keys [selection-key]
+                                   :stun/keys [ip port]
+                                   :as x}]
+                             (when-not @once
+                               (do
+                                 (prn ::stun ip port)
+                                 (prn ::sk selection-key)
+                                 ;; park datagram channel
+                                 (.interestOps selection-key nio/read-op)
+                                 (let [{client-x :context/x
+                                        :as client-attachment} (.attachment selection-key)]
+                                   (->> (assoc client-attachment
+                                               :context/rf yrf
+                                               :context/x x)
+                                        (.attach selection-key)))
+                                 ;; activate original request channel
+                                 (-> callback-x :nio/selection-key (nio/writable!))
+                                 (vreset! once true)))
+                             (rf acc (assoc x :stun/ip "192.168.1.140" :stun/port (-> selection-key (.channel) (.socket) (.getLocalPort))))))))))
+                    nio/writable-rf
+                    (drop-while (fn [{:stun/keys [ip port]}]
+                                  (prn ::stun ip port)
+                                  (and (not ip) (not port)))))
+                xrf (xf (rf/result-fn))]
+            (fn
+              ([] (rf))
+              ([acc] (rf acc))
+              ([acc {:nio/keys [selection-key in out selector]
+                     original-rf :context/rf
+                     original-x :context/x
+                     :as x}]
+               (when-not @once
+                 (->> (assoc x
+                             :context/buf buf
+                             :context/callback-rf rf
+                             :context/callback-x x)
+                      (xrf acc))
+                 #_(->> (xrf) (vreset! client))
+                 #_(let [{client-x :context/x
+                          :as client-attachment} (.attachment client)
+                         client-x (assoc client-x
+                                         :context/callback-rf rf
+                                         :context/callback-x x)]
+                     (->> (assoc client-attachment
+                                 :context/rf xrf
+                                 :context/x client-x)
+                          (.attach client)))
+                 ;; park request channel
+                 (.interestOps selection-key 0)
+                 (prn ::stun ::started @client)
+                 (vreset! once true))
+               (cond
+                 ;; waiting to send response
+                 (xrf)
+                 (let [{:stun/keys [ip port] :as y} (xrf)]
+                   ;; TODO: switch datagram channel rf to ice/dtls-rf
+                   (prn ::stun ip port)
+                   (if-not (and ip port)
+                     acc
+                     (rf acc (assoc x
+                                    :context/client @client
+                                    :context/ip ip
+                                    :context/port port))))
+                 :else
+                 (do
+                   (prn ::waiting)
+                   acc))))))
         ;; UDP port
-        (rf/one-rf :http/local-port
-                   (comp
-                    (ice/data-channel-rf (comp
-                                          (rf/one-rf :context/buf (comp
-                                                                   (map (fn [x]
-                                                                          (assoc x :context/buf (ByteBuffer/allocate 150))))
-                                                                   (map :context/buf)))
-                                          ice/simple-stun-rf
-                                          ice/dtls-rf))
-                    (map (fn [{:nio/keys [selection-key]
-                               :as x}]
-                           (assoc x :http/local-port (-> selection-key (.channel) (.socket) (.getLocalPort)))))
-                    (map :http/local-port)))
+        #_(rf/one-rf :http/local-port
+                     (comp
+                      (ice/data-channel-rf (comp
+                                            (rf/one-rf :context/buf (comp
+                                                                     (map (fn [x]
+                                                                            (assoc x :context/buf (ByteBuffer/allocate 150))))
+                                                                     (map :context/buf)))
+                                            stun/stun-host-rf
+                                            stun/discover-rf
+                                            ice/simple-stun-rf
+                                            ice/dtls-rf))
+                      (map (fn [{:nio/keys [selection-key]
+                                 :as x}]
+                             (assoc x :http/local-port (-> selection-key (.channel) (.socket) (.getLocalPort)))))
+                      (map :http/local-port)))
         ;; restore selection key
         #_(map (fn [{:context/keys [client]
-                   :as x}]
-               (assoc x :nio/selection-key client)))
-        (map (fn [{:context/keys [client]
+                     :as x}]
+                 (assoc x :nio/selection-key client)))
+        (map (fn [{:context/keys [client ip port]
                    ;;:stun/keys [fingerprint]
                    :http/keys [local-port]
                    :as x}]
                (assoc x
                       ;;:sdp/fingerprint fingerprint
-                      :sdp/port local-port)))
+                      :sdp/host ip ;;"192.168.1.140"
+                      :sdp/port port ;;local-port
+                      )))
         ;; create SDP answer
         (comp
          nio/writable-rf
          (nio/send-rf (comp
                        (map (fn [x]
                               (assoc x :http/json {:type "answer" :sdp (sdp x)})))
-                       (rf/debug-rf ::json)
+                       #_(rf/debug-rf ::json)
                        (map (fn [{:http/keys [json]
                                   :as x}]
                               (prn ::json json)
@@ -560,7 +666,6 @@
        (comp rf/identity-rf)))))
 
 #_(
-
    *e
    *ns*
    (require 'jaq.http.xrf.signaling :reload)
@@ -605,6 +710,7 @@
         (into [] connect-rf [x]))))
    (-> x :rtc/peer (.close))
 
+   (-> x :net/xhr (.abort))
    (-> x :rtc/channel (.-id))
    (-> x :rtc/channel (.-label))
    (-> x :rtc/channel (.send "alpeware"))

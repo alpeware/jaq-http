@@ -18,6 +18,31 @@
    [java.net NetworkInterface]
    [java.nio ByteBuffer]))
 
+(defn ips []
+  (let [ip (fn [v]
+              (cond
+                (= (count v) 4)
+                (string/join "."
+                             (->> v
+                                  (map (fn [e] (bit-and e 0xff)))
+                                  (map str)))
+                (= (count v) 16)
+                (string/join ":"
+                             (->> v
+                                  (map (fn [e] (bit-and e 0xff)))
+                                  (map (fn [x] (Integer/toHexString x)))
+                                  (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
+                                  (partition 2)
+                                  (map (fn [[a b]] (str a b)))))))]
+     (->> (NetworkInterface/getNetworkInterfaces)
+          (enumeration-seq)
+          (mapcat (fn [e]
+                    (->> (.getInetAddresses e)
+                         (enumeration-seq)
+                         (remove (fn [f] (.isLoopbackAddress f)))
+                         (map (fn [f] (->> (.getAddress f) (map (fn [x] (bit-and 0xff x))) ip))))))
+          (set))))
+
 (def receive-stun-rf
   (comp
    (fn header-rf [rf]
@@ -568,7 +593,7 @@
                    :sctp/stream stream #_(inc stream)
                    :sctp/sequence sequence
                    :sctp/protocol protocol
-                   :datachannel/payload payload
+                   :datachannel/payload (str "echo: " payload)
                    ;; packet
                    :sctp/src (:sctp/src chunk)
                    :sctp/dst (:sctp/dst chunk)
@@ -1291,10 +1316,33 @@
         (mapcat (fn [e]
                   (->> (.getInetAddresses e)
                        (enumeration-seq)
-                       (map (fn [f] (.getHostAddress f))))))
+                       (remove (fn [f] (.isLoopbackAddress f)))
+                       (map (fn [f] [(.getHostAddress f) (->> (.getAddress f) (map (fn [x] (bit-and 0xff x))))])))))
         (set))
 
-   ;; listen
-
+   ;; get all ip addresses
+   (let [ip (fn [v]
+              (cond
+                (= (count v) 4)
+                (string/join "."
+                             (->> v
+                                  (map (fn [e] (bit-and e 0xff)))
+                                  (map str)))
+                (= (count v) 16)
+                (string/join ":"
+                             (->> v
+                                  (map (fn [e] (bit-and e 0xff)))
+                                  (map (fn [x] (Integer/toHexString x)))
+                                  (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
+                                  (partition 2)
+                                  (map (fn [[a b]] (str a b)))))))]
+     (->> (NetworkInterface/getNetworkInterfaces)
+          (enumeration-seq)
+          (mapcat (fn [e]
+                    (->> (.getInetAddresses e)
+                         (enumeration-seq)
+                         (remove (fn [f] (.isLoopbackAddress f)))
+                         (map (fn [f] (->> (.getAddress f) (map (fn [x] (bit-and 0xff x))) ip))))))
+          (set)))
 
    )

@@ -175,8 +175,8 @@
         (nil? socket-address) ;; end of stream?
         (do
           (prn ::eos selection-key)
-          (.interestOps selection-key 0)
-          (.cancel selection-key))
+          #_(.interestOps selection-key 0)
+          #_(.cancel selection-key))
 
         socket-address ;; read some bytes
         (do
@@ -203,6 +203,7 @@
       (.position bb))))
 
 #_(
+   (in-ns 'jaq.http.xrf.nio)
    *e
    (-> x :nio/selector (.keys) (first) (.attachment) :context/x (read!))
    (-> x :nio/selector (.keys) (first) (.attachment) :context/x :nio/selection-key)

@@ -961,14 +961,19 @@
    (->> x :nio/selector
         (.keys)
         (filter (fn [sk]
-                  (-> sk (.channel) (.socket) (.getLocalPort) (= 48073))))
+                  (-> sk (.channel) (.socket) (.getLocalPort) (= 49901))))
         (map (fn [sk]
                (-> sk (.channel) (.close))
                (-> sk (.cancel))))
         (doall))
    (in-ns 'jaq.http.xrf.repl)
 
-
+   (->> x :nio/selector
+        (.keys)
+        (map (fn [sk]
+               [(-> sk (.channel) (.socket) (.getLocalPort))
+                #_(-> sk (.channel) (.socket) (.getRemoteSocketAddress))]))
+        (doall))
 
    (-> x :context/repl-clients (deref))
 

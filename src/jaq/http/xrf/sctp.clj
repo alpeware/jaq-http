@@ -921,7 +921,7 @@
                  (.putInt (get protocols protocol)))
              ;; encode payload
              (f x)
-             (let [padding (-> buf (.position) (- start) (mod -4) -)]
+             #_(let [padding (-> buf (.position) (- start) (mod -4) -)]
                (prn ::data ::padding padding)
                (run! (fn [_] (.put buf (byte 0))) (range padding)))))
    ;; TODO: send SACK for received message

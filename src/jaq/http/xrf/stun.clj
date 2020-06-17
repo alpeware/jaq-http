@@ -697,6 +697,154 @@
 
    )
 
+(def discover-rf
+  "Discover datagram channel's external IP/port using STUN server."
+  (comp
+   nio/datagram-read-rf
+   (map (fn [{:nio/keys [address] :as x}]
+          (if address
+            (assoc x
+                   :http/host (.getHostName address)
+                   :http/port (.getPort address))
+            x)))
+   nio/datagram-write-rf
+   (nio/datagram-send-rf
+    (comp
+     (map
+      (fn [{:http/keys [host port] :as x}]
+        (assoc x :http/req [(encode {:stun/buf (ByteBuffer/allocate 100)
+                                     :stun/message :request
+                                     :stun/id (transaction-id)
+                                     :stun/attributes []})])))))
+   nio/readable-rf
+   (nio/datagram-receive-rf
+    (comp
+     #_(rf/debug-rf ::received)
+     (fn header-rf [rf]
+       (let [header-length 20
+             val (volatile! nil)
+             vacc (volatile! [])
+             assoc-fn (fn [x]
+                        (let [{:keys [message length cookie id]} @val]
+                          (assoc x
+                                 :stun/message message
+                                 :stun/length length
+                                 :stun/cookie cookie
+                                 :stun/id id)))]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:keys [byte] :as x}]
+            (cond
+              (< (count @vacc) header-length)
+              (do
+                (vswap! vacc conj byte)
+                (if-not (= (count @vacc) header-length)
+                  acc
+                  (do
+                    (->> @vacc
+                         (byte-array)
+                         (ByteBuffer/wrap)
+                         (decode)
+                         (vreset! val))
+                    (rf acc (assoc-fn x)))))
+
+              :else
+              (rf acc (assoc-fn x)))))))
+     (fn attributes-rf [rf]
+       (let [once (volatile! false)
+             val (volatile! nil)
+             vacc (volatile! [])
+             assoc-fn (fn [x]
+                        (let [{:keys []} @val]
+                          (assoc x
+                                 :stun/vacc @vacc)))]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:keys [byte]
+                  :stun/keys [message length]
+                  :as x}]
+            (cond
+              (and (not @once) (> length 0) (empty? @vacc))
+              (do
+                (vreset! once true)
+                acc)
+
+              (< (count @vacc) length)
+              (do
+                (vswap! vacc conj byte)
+                (if-not (= (count @vacc) length)
+                  acc
+                  (do
+                    (->> @vacc
+                         (byte-array)
+                         (ByteBuffer/wrap)
+                         #_(decode-attributes)
+                         (vreset! val))
+                    (rf acc (assoc x
+                                   :stun/vacc @vacc
+                                   :stun/response @val)))))
+
+              :else
+              (rf acc (assoc x :stun/response @val)))))))
+     #_(rf/debug-rf ::message)
+     (map (fn [{:stun/keys [vacc message length cookie id] :as x}]
+            (let [buf (->> vacc
+                           (byte-array)
+                           (ByteBuffer/wrap))]
+              ;; TODO: improve
+              (loop [x' (->> (assoc x :stun/buf buf)
+                             (decode-attributes))]
+                (if-not (.hasRemaining buf)
+                  x'
+                  (recur (decode-attributes x')))))))
+     (map (fn [{:stun/keys [port ip message length cookie id] :as x}]
+            (def y x)
+            (prn ::stun port ip message length cookie id)
+            x))
+     (take 1)))))
+
+(def stun-host-rf
+  (map (fn [x]
+         (assoc x
+                :http/host host
+                :http/port port))))
+#_(
+   (in-ns 'jaq.http.xrf.stun)
+
+   ;; stun
+   (let [xf (comp
+             nio/selector-rf
+             (nio/thread-rf
+              (comp
+               (nio/select-rf
+                (comp
+                 #_(map (fn [x]
+                        (assoc x
+                               :http/host host
+                               :http/port port)))
+                 (nio/datagram-channel-rf
+                  (comp
+                   stun-host-rf
+                   discover-rf
+                   nio/close-connection))
+                 nio/writable-rf))
+               nio/close-rf)))]
+     (->> [{:context/bip-size (* 1 4096)}]
+          (into [] xf)))
+   (def x (first *1))
+   *e
+
+   (-> x :nio/selector (.keys))
+   (->> x :nio/selector (.keys) (map (fn [e]
+                                       (-> e (.channel) (.close))
+                                       (.cancel e))))
+   (-> x :nio/selector (.wakeup))
+   (-> x :nio/selector (.close))
+
+   )
+
 #_(
    (in-ns 'jaq.http.xrf.stun)
    (require 'jaq.http.xrf.stun :reload)
@@ -821,7 +969,24 @@
      (->> [{:context/bip-size (* 1 4096)
             :http/host host
             :http/port port
-            :http/local-port 2222}]
+            ;;:http/local-port 2222
+            }]
+          (into [] xf)))
+
+   ;; stun
+   (let [xf (comp
+             nio/selector-rf
+             (nio/thread-rf
+              (comp
+               (nio/select-rf
+                (comp
+                 (nio/datagram-channel-rf
+                  (comp
+                   discover-rf
+                   nio/close-connection))
+                 nio/writable-rf))
+               nio/close-rf)))]
+     (->> [{:context/bip-size (* 1 4096)}]
           (into [] xf)))
    (def x (first *1))
    *e
@@ -970,9 +1135,9 @@
                                                       x))
                                                (map :stun/message)))
                      #_(rf/one-rf :stun/username (comp
-                                                (map :stun/username)))
+                                                  (map :stun/username)))
                      #_(rf/one-rf :stun/id (comp
-                                          (map :stun/id)))
+                                            (map :stun/id)))
                      (rf/choose-rf
                       :stun/message
                       {:request (comp
