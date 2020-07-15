@@ -384,6 +384,46 @@
              (map (fn [x] (prn ::repeatedly) x))))))))
        nio/close-rf))))
 
+(def dev
+  [:body
+   [:h1 "Hello WebRTC"]
+   [:div#app]
+   [:script
+    ;; inits
+    "var CLOSURE_UNCOMPILED_DEFINES = {'goog.json.USE_NATIVE_JSON': true};"
+    ;; load deps async not using document.write
+    "var CLOSURE_DEFINES = {'goog.ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING': true};"
+    ;; handle dependency graph ourselves
+    "var CLOSURE_NO_DEPS = true;"
+    ;; app state?
+    "var STATE = {id: 'JAQ-DEVICE-ID'};"]
+   (page/include-js "/out/goog/base.js")
+   (page/include-js "/out/goog/deps.js")
+   (page/include-js "/out/brepl_deps.js")
+   ;; load main ns
+   [:script "goog.require('goog.json');"]
+   [:script "goog.require('cljs.repl');"]
+   ;; TODO: add as CLJS
+   [:script
+    "let evaluate = (s) => {try { return {val: cljs.core.pr_str.call(null, eval(s)), status: 'success'}; } catch(error) { return {val: error.message, status: 'exception'}; }};"
+    "let session = (id) => { console.log('starting session...');
+          goog.isProvided_ = (e) => false;
+          let ws = new WebSocket(document.location.href.replace('http', 'ws') + 'repl/ws?id=' + id);
+          ws.onmessage = (e) => ws.send(goog.json.serialize(evaluate(goog.json.parse(e.data).form))); };"
+    "window.addEventListener('load', (e) => session(STATE.id));"]])
+
+(def app-js "/out/app.js")
+(def prod
+  [:body
+   [:h1 "Hello WebRTC"]
+   [:div#app]
+   [:script
+    ;; app state?
+    "var STATE = {id: 'JAQ-DEVICE-ID'};"]
+   (page/include-js app-js)
+   ;; load main ns
+   [:script "jaq.http.xrf.signaling.x();"]])
+
 (defn root [{:keys [headers]
              {:keys [x-appengine-city
                      x-appengine-country
@@ -394,39 +434,17 @@
   (page/html5
    [:head
     [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-    [:title "CLJS REPL"]
+    [:title "Alpeware"]
     [:style {:type "text/css"}
      (css [:body {:font-size "16px"}]
-          [:h1 {:font-size "24px"}])]]
-   [:body
-    [:h1 "CLJS REPL"]
-    [:div#app]
-    [:script
-     ;; inits
-     "var CLOSURE_UNCOMPILED_DEFINES = {'goog.json.USE_NATIVE_JSON': true};"
-     ;; load deps async not using document.write
-     "var CLOSURE_DEFINES = {'goog.ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING': true};"
-     ;; handle dependency graph ourselves
-     "var CLOSURE_NO_DEPS = true;"
-     ;; app state?
-     "var STATE = {id: 'JAQ-DEVICE-ID'};"]
-    (page/include-js "/out/goog/base.js")
-    (page/include-js "/out/goog/deps.js")
-    (page/include-js "/out/brepl_deps.js")
-    ;; load main ns
-    [:script "goog.require('goog.json');"]
-    [:script "goog.require('cljs.repl');"]
-    ;; TODO: add as CLJS
-    [:script
-     "let evaluate = (s) => {try { return {val: cljs.core.pr_str.call(null, eval(s)), status: 'success'}; } catch(error) { return {val: error.message, status: 'exception'}; }};"
-     "let session = (id) => { console.log('starting session...');
-          goog.isProvided_ = (e) => false;
-          let ws = new WebSocket(document.location.href.replace('http', 'ws') + 'repl/ws?id=' + id);
-          ws.onmessage = (e) => ws.send(goog.json.serialize(evaluate(goog.json.parse(e.data).form))); };"
-     "window.addEventListener('load', (e) => session(STATE.id));"]]))
+          [:h1 {:font-size "24px"}])]
+    #_prod
+    dev]))
 
 #_(
-
+   (in-ns 'cloure.core)
+   (in-ns 'jaq.http.xrf.repl)
+   *e
    (with-out-str (clojure.pprint/pprint {:foo :bar}))
    (page/html5
     [:head [:style {:type "text/css"}

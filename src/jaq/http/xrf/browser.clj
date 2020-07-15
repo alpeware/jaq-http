@@ -536,10 +536,15 @@
                  :source-map true}
                 cenv)
 
+   (reset! cenv (or env/*compiler* (env/default-compiler-env* opts)))
+   (in-ns 'jaq.http.xrf.browser)
    (cljsc/build "src"
-                {:optimizations :advanced #_:simple #_:none
+                {:optimizations #_:advanced #_:simple :none
                  :output-dir "out"
-                 :output-to "out/app.js"
-                 :source-map false}
+                 ;;:output-to "out/app.js"
+                 ;;:fingerprint true
+                 :verbose true
+                 :source-map true #_"out/app.js.map"
+                 }
                 cenv)
    )

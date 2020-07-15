@@ -621,14 +621,15 @@
                (do
                  (decommit bb)
                  (.flip scratch)
-                 (loop []
-                   (let [b (.get scratch)]
-                     (->> (assoc x
-                                 :context/remaining (.remaining scratch)
-                                 :byte b)
-                          (xrf acc)))
-                   (when (and (.hasRemaining scratch) (not (xrf)))
-                     (recur)))
+                 (when (.hasRemaining scratch)
+                   (loop []
+                     (let [b (.get scratch)]
+                       (->> (assoc x
+                                   :context/remaining (.remaining scratch)
+                                   :byte b)
+                            (xrf acc)))
+                     (when (and (.hasRemaining scratch) (not (xrf)))
+                       (recur))))
                  (cond
                    (xrf)
                    (do

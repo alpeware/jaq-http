@@ -13,6 +13,7 @@
   - https://tools.ietf.org/id/draft-ietf-rtcweb-data-protocol-07.txt"
   #?(:cljs
      (:require [cljs.core]
+               [goog.events]
                [clojure.browser.event :refer [IEventType]]
                [clojure.pprint :refer [pprint]]
                [clojure.string :as string]
@@ -35,8 +36,8 @@
                [jaq.gcp.appengine :as appengine]
                [jaq.gcp.storage :as storage]))
   #?(:cljs
-     (:import [goog.net XhrIo]
-              [goog.events EventTarget EventType])
+     (:import [goog.events EventTarget EventType]
+              [goog.net XhrIo])
      :clj
      (:import
       [java.net NetworkInterface]
@@ -61,6 +62,12 @@
                     [k v])))
            (into {}))))
 
+#_(
+   *ns*
+   (in-ns 'jaq.http.xrf.signaling)
+   (->> y :http/json :sdp :sdp (parse-sdp))
+   )
+
 (defn sdp [{:sdp/keys [port host ip ufrag pwd fingerprint]
             :or {ip "0.0.0.0" ufrag "abcd" pwd "1234567890123456789012"}
             :as x}]
@@ -76,7 +83,9 @@
             :mid ["0"]
             :sctp-port ["5000"]
             ;; foundation component transport priority address port type
-            :candidate [(str "foundation 1 udp 2130706431 " host " " port " typ host")]
+            ;;:candidate [(str "foundation 1 udp 2130706431 " host " " port " typ host")]
+            :candidate [(str "foundation 1 udp 2130706431 " host " " port " typ srflx raddr 192.168.1.140 rport " port)
+                        (str "foundation 1 udp 2130706431 192.168.1.140" " " port " typ host")]
             :fingerprint [(str "sha-256 " (string/join ":" fingerprint))]}}
        ;; need to order the keys unfortunately
        ((fn [{:keys [v o s t m c a] :as sdp}]
@@ -122,10 +131,11 @@
          (fn
            ([] (rf))
            ([acc] (rf acc))
-           ([acc {:rtc/keys [peer channel-name]
+           ([acc {:rtc/keys [peer channel-name channel-conf]
+                  :or {channel-conf {}}
                   :as x}]
             (when-not @channel
-              (vreset! channel (.createDataChannel peer channel-name)))
+              (vreset! channel (.createDataChannel peer channel-name (clj->js channel-conf))))
             (->> (assoc x :rtc/channel @channel)
                  (rf acc)))))))
    :clj :noop)
@@ -368,14 +378,51 @@
         (map (fn [{:rtc/keys [channel] :as x}]
                (assoc x
                       :event/src channel
+                      :event/type "open")))
+        (html/register-rf
+         (comp
+          (map (fn [{:event/keys [target event]
+                     :rtc/keys [channel peer]
+                     :as x}]
+                 (.info js/console "open" target)
+                 #_(-> channel (.send (.now js/performance)))
+                 (-> peer (.getStats) (.then
+                                       (fn [e]
+                                         (->> e (.values)
+                                              (.from js/Array)
+                                              (.stringify js/JSON)
+                                              (.info js/console)
+                                              #_(.send channel))
+                                         (.send channel (.repeat "foobar" 20)))))
+                 #_(-> channel (.send (.now js/performance)))
+                 x))))
+        (map (fn [{:rtc/keys [channel] :as x}]
+               (assoc x
+                      :event/src channel
                       :event/type "message")))
         (html/register-rf
          (comp
           (map (fn [{:event/keys [target event]
                      :rtc/keys [channel]
                      :as x}]
-                 (.info js/console "message" (-> event (.-event_) (.-data)))
-                 x))))
+                 (let [end (.now js/performance)
+                       ;;start (-> event (.-event_) (.-data) (js/parseFloat))
+                       ms 0 #_(- end start)]
+                   (.info js/console "message " (-> event (.-event_) (.-data)))
+                   (.info js/console "roundtrip " ms "ms")
+                   (assoc x
+                          ;;:context/start start
+                          :context/end end
+                          :context/roundtrip ms))))
+          (map (fn [{:component/keys [state]
+                     :context/keys [roundtrip]
+                     :event/keys [src target type event]
+                     :as x}]
+                 (assoc x
+                        :event/src (dom/getElement "info")
+                        :dom/hiccup [:div
+                                     [:label (str "Roundtrip: " roundtrip " ms ")]])))
+          html/render-rf))
         ;; create offer
         (async-rf (comp
                    (await-rf :rtc/offer (fn [{:rtc/keys [peer]}] (.createOffer peer)))
@@ -386,10 +433,12 @@
                               :as x}]
                           (.info js/console "offer" (-> offer (.-sdp)))
                           x))))
+        (map (fn [{:rtc/keys [] :as x}]
+               (assoc x
+                      :event/src (dom/getElement "submit")
+                      :event/type "click")))
         ;; form handler
-        (html/listen-rf
-         (dom/getElement "submit")
-         :click
+        (html/register-rf
          (comp
           (comp
            (fn [rf]
@@ -421,13 +470,13 @@
                          :net/headers {:content-type "application/json"}
                          :net/content @state
                          :event/src xhr
-                         :event/type (get html/net-events :complete))))
+                         :event/type "complete" #_(get html/net-events :complete))))
            (map (fn [{:net/keys [xhr uri method content headers]
                       :event/keys [type]
                       :as x}]
                   (.info js/console "requesting " uri " " type)
                   (.send xhr uri (name method)
-                         (-> content (clj->js) (JSON/stringify))
+                         (->> content (clj->js) (.stringify js/JSON))
                          (-> headers (clj->js)))
                   x))))))
        :clj
@@ -459,24 +508,40 @@
         (rf/one-rf :ssl/cert (comp
                               (map (fn [x] (assoc x :ssl/cert (dtls/self-cert :cert/alias "server"))))
                               (map :ssl/cert)))
+        (rf/one-rf :context/offer (comp
+                                   (map (fn [{:http/keys [json] :as x}]
+                                          (->> json :sdp :sdp (parse-sdp))))))
         (rf/one-rf :context/remote-password (comp
-                                             (map (fn [{:http/keys [json]}]
-                                                    (->> json :sdp :sdp (parse-sdp) :a
-                                                         :ice-pwd (first))))))
+                                             (map (fn [{:context/keys [offer]}]
+                                                    (->> offer :a :ice-pwd (first))))))
+        (rf/one-rf :context/remote-ufrag (comp
+                                          (map (fn [{:context/keys [offer]}]
+                                                 (->> offer :a :ice-ufrag (first))))))
+        (rf/one-rf :context/remote-host (comp
+                                         (map (fn [{:context/keys [offer]}]
+                                                (->> offer
+                                                     :a
+                                                     :candidate
+                                                     (sort-by (fn [e] (->> (string/split e #"\s") (drop 3) (first))))
+                                                     (first)
+                                                     ((fn [e]
+                                                        (prn ::candidate e)
+                                                        (->> (string/split e #"\s") (drop 4) (take 2)
+                                                             (partition 2) (map (fn [[e f]] {:host e :port (Integer/parseInt f)})) (first))))
+                                                     )))))
         (map (fn [{:http/keys [json]
+                   :context/keys [offer]
                    :ssl/keys [cert]
                    {:cert/keys [fingerprint]} :ssl/cert
                    :as x}]
                (assoc x
                       :context/bip-size (* 20 4096)
-                      :ssl/packet-size 1024
+                      :ssl/packet-size (* 2 1024)
                       :ssl/mode :server
                       :ssl/certs [cert]
                       :sdp/fingerprint fingerprint
                       :stun/password "1234567890123456789012"
-                      :stun/ufrag "abcd"
-                      ;;:http/local-port 2230
-                      )))
+                      :stun/ufrag "abcd")))
         ;; create UDP channel and wait for STUN results
         (fn [rf]
           (let [once (volatile! false)
@@ -493,7 +558,35 @@
                                     :http/port (.getPort address))
                              x)))
                     nio/datagram-write-rf
-                    ice/simple-stun-rf
+                    (rf/one-rf :context/sent
+                               (rf/repeat-rf
+                                5
+                                (comp
+                                 (map (fn [{:context/keys [remote-host] :as x}]
+                                        (assoc x
+                                               :http/host (:host remote-host)
+                                               :http/port (:port remote-host))))
+                                 (nio/datagram-send-rf
+                                  (comp
+                                   (map (fn [{:http/keys [host port]
+                                          :context/keys [remote-password remote-ufrag]
+                                          :stun/keys [ip port ufrag password]
+                                          :as x}]
+                                          (assoc x
+                                                 :stun/buf (ByteBuffer/allocate 100)
+                                                 :stun/id (stun/transaction-id)
+                                                 :stun/message :request
+                                                 :stun/password remote-password
+                                                 :stun/username (str remote-ufrag ":" ufrag)
+                                                 :stun/family :ipv4
+                                                 :stun/port port
+                                                 :stun/ip ip
+                                                 :stun/attributes [:username :ice-controlled #_:use-candidate
+                                                                   :message-integrity :fingerprint])))
+                                   (map (fn [x]
+                                          (assoc x :http/req [(stun/encode x)]))))))))
+                    #_(rf/repeat-rf 5 ice/simple-stun-rf)
+                    #_ice/simple-stun-rf
                     ice/dtls-rf)
                 yrf (yf (rf/result-fn))
                 xf (comp
@@ -508,16 +601,19 @@
                           (fn
                             ([] (rf))
                             ([acc] (rf acc))
-                            ([acc {:context/keys [callback-rf callback-x]
+                            ([acc {:context/keys [callback-rf callback-x remote-host]
                                    :nio/keys [selection-key]
                                    :stun/keys [ip port]
                                    :as x}]
                              (when-not @once
                                (do
+                                 (def y x)
+                                 (prn ::remote-host remote-host)
                                  (prn ::stun ip port)
-                                 (prn ::sk selection-key)
+                                 (prn ::sk (-> selection-key (.channel) (.socket) (.getLocalPort)) selection-key)
                                  ;; park datagram channel
-                                 (.interestOps selection-key nio/read-op)
+                                 #_(.interestOps selection-key nio/read-op)
+                                 (.interestOps selection-key nio/write-op)
                                  (let [{client-x :context/x
                                         :as client-attachment} (.attachment selection-key)]
                                    (->> (assoc client-attachment
@@ -527,7 +623,10 @@
                                  ;; activate original request channel
                                  (-> callback-x :nio/selection-key (nio/writable!))
                                  (vreset! once true)))
-                             (rf acc (assoc x :stun/ip "192.168.1.140" :stun/port (-> selection-key (.channel) (.socket) (.getLocalPort))))))))))
+                             (->> #_x (assoc x
+                                             :stun/ip #_"35.206.112.7" "192.168.1.140"
+                                             :stun/port #_10001 (-> selection-key (.channel) (.socket) (.getLocalPort)))
+                                  (rf acc))))))))
                     nio/writable-rf
                     (drop-while (fn [{:stun/keys [ip port]}]
                                   (prn ::stun ip port)
@@ -537,10 +636,12 @@
               ([] (rf))
               ([acc] (rf acc))
               ([acc {:nio/keys [selection-key in out selector]
+                     :context/keys [remote-host]
                      original-rf :context/rf
                      original-x :context/x
                      :as x}]
                (when-not @once
+                 (prn ::remote-host ::once remote-host)
                  (->> (assoc x
                              :context/buf buf
                              :context/callback-rf rf
@@ -638,7 +739,7 @@
                (.info js/console xhr)
                (assoc x
                       :event/src xhr
-                      :event/type (get html/net-events :complete))))
+                      :event/type "complete" #_(get html/net-events :complete))))
         (html/register-rf (comp
                            (map (fn [{:event/keys [target] :as x}]
                                   (assoc x
@@ -660,11 +761,61 @@
                                          :event/src (dom/getElement "response")
                                          :dom/hiccup [:div
                                                       [:label "Server response: "]
-                                                      [:pre (JSON/stringify json)]])))
+                                                      [:pre (.stringify js/JSON json)]])))
                            html/render-rf)))
        :clj
        (comp rf/identity-rf)))))
 
+#_(
+   *ns*
+   (in-ns 'jaq.http.xrf.signaling)
+   )
+
+#?(:cljs
+   (defonce init
+     (into []
+           (comp
+            html/render-rf)
+           [{:event/src (dom/getElement "app")
+             :dom/hiccup [:div
+                          [:style {:type "text/css"}
+                           (css [:div#main {:font-size "16px"}] [:div#response {:background-color "blue"}])]
+                          [:div#main
+                           [:form#form
+                            [:label "Peer Connection"]
+                            [:button#submit {:type "button"} "Connect"]]
+                           [:div#info]
+                           [:div#response]]]}]))
+
+   :clj :noop)
+
+#?(:cljs
+   (defn ^:export x []
+     (let [state (volatile! {})
+           on-change (fn [k e] (vswap! state assoc k (-> e .-target .-value)))
+           on-focus (fn [k e] (-> e .-target .-value (set! (get @state k))))
+           x {:component/state state
+              :component/css [:div#main {:font-size 16}]
+              :event/src (dom/getElement "app")
+              :rtc/channel-name "alpeware"
+              :rtc/conf {:iceServers [{:urls "stun:stun.l.google.com:19302"}]}
+              :dom/hiccup [:div
+                           [:style {:type "text/css"}
+                            (css [:div#main {:font-size "16px"}] [:div#response {:background-color "grey"}])]
+                           [:div#main
+                            [:form#form
+                             [:label "Peer Connection"]
+                             [:button#submit {:type "button"} "Connect"]]
+                            [:div#info]
+                            [:div#response]]]}]
+       (first
+        (into [] connect-rf [x]))))
+
+   :clj :noop)
+
+#_(
+   (x)
+   )
 #_(
    *e
    *ns*
@@ -672,7 +823,10 @@
    (in-ns 'jaq.http.xrf.signaling)
 
    (+ 1 1)
+   (-> y :stun/password)
    (-> y :nio/selection-key)
+   (-> y :nio/selection-key (.channel) (.socket) (.getLocalSocketAddress))
+
    (with-out-str (pprint {:foo :bar}))
    ;; init
    (into []
@@ -697,6 +851,8 @@
               :component/css [:div#main {:font-size 16}]
               :event/src (dom/getElement "app")
               :rtc/channel-name "alpeware"
+              ;;:rtc/channel-conf {:ordered false}
+              :rtc/conf {:iceServers [{:urls "stun:stun.l.google.com:19302"}]}
               :dom/hiccup [:div
                            [:style {:type "text/css"}
                             (css [:div#main {:font-size "16px"}] [:div#response {:background-color "grey"}])]
@@ -709,6 +865,12 @@
        (first
         (into [] connect-rf [x]))))
    (-> x :rtc/peer (.close))
+   (-> x :rtc/peer #_(.-readystate))
+
+   (-> x :rtc/peer (.getStats) (.then (fn [e] (->> e (.values) (.from js/Array) (.stringify js/JSON) (.log js/console)))))
+
+   (->> x :rtc/peer (.info js/console))
+   (->> x :rtc/channel (.info js/console))
 
    (-> x :net/xhr (.abort))
    (-> x :rtc/channel (.-id))
@@ -729,9 +891,7 @@
         )
 
    (goog/getCssName "foo")
-   (-> (dom/getDocument) (.querySelector "button") (goog.events/removeAll))
-
-   )
+   (-> (dom/getDocument) (.querySelector "button") (goog.events/removeAll)))
 
 #_(
 

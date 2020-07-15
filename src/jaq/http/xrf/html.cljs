@@ -76,7 +76,7 @@
 ;; TODO: calling extract for both open and close
 (defn element-close
   [elem]
-  (let [[tag-name attrs] (extract elem)]
+  (let [[tag-name attrs] (extract elem {})]
     (incd/elementClose tag-name)))
 
 (defn element-void
@@ -159,7 +159,7 @@
            (->> (assoc x'
                        :perf/start start
                        :perf/end (.now js/performance))
-                (rf acc'))))))))
+                (rf acc))))))))
 
 (def render-rf
   (fn [rf]
@@ -200,6 +200,7 @@
         ([acc {:dom/keys [hiccup]
                :as x}]
          (when-not @listen
+           (.info js/console "listen" src type)
            (->> (events/listen src
                                type
                                (fn [e]
@@ -301,7 +302,7 @@
    render-rf))
 
 ;; setup registry
-(defn init []
+#_(defn init []
   (register! (dom/getDocument) :load init-rf x))
 
 

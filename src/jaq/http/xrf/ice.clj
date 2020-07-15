@@ -180,9 +180,10 @@
                                      (assoc x :context/buf (ByteBuffer/allocate 150))))
                               (map :context/buf)))
    ;; wait for incoming binding request
-   (nio/datagram-receive-rf
-    (comp
-     receive-stun-rf))
+   (rf/repeatedly-rf
+    (nio/datagram-receive-rf
+     (comp
+      receive-stun-rf)))
    ;; wait for request
    (drop-while (fn [{:stun/keys [message]}]
                  (prn ::message message)
@@ -196,6 +197,7 @@
                 :stun/keys [ip]
                 :http/keys [host port]
                 :as x}]
+            (prn ::stun ::success host port)
             (assoc x
                    :stun/buf (-> buf (.clear))
                    :stun/message :success
@@ -247,7 +249,7 @@
                 (if (and (> byte 19) (< byte 64))
                   (rf acc x)
                   (do
-                    (prn ::filtering ::stun)
+                    #_(prn ::filtering ::stun)
                     (xrf acc x)
                     acc)))))))))
    dtls/handshake-rf
@@ -547,6 +549,7 @@
        (fn [{:stun/keys [buf] :as x}]
          (assoc x :http/req [(sctp/encode x)]))))))
 
+   ;; (Integer/toBinaryString 1)
    ;; message
    (dtls/receive-ssl-rf
       (comp
@@ -593,7 +596,7 @@
                    :sctp/stream stream #_(inc stream)
                    :sctp/sequence sequence
                    :sctp/protocol protocol
-                   :datachannel/payload (str "echo: " payload)
+                   :datachannel/payload "foo" #_payload #_(str "echo: " payload)
                    ;; packet
                    :sctp/src (:sctp/src chunk)
                    :sctp/dst (:sctp/dst chunk)
@@ -1155,6 +1158,58 @@
 #_(
    (in-ns 'jaq.http.xrf.ice)
    (require 'jaq.http.xrf.ice :reload)
+   ;; udp/dtls/sctp server
+   (let [certs [(dtls/self-cert :cert/alias "server")
+                (dtls/self-cert :cert/alias "client")]
+         xf (comp
+             nio/selector-rf
+             (nio/thread-rf
+              (comp
+               (nio/select-rf
+                (comp
+                 (nio/datagram-channel-rf
+                  (comp ;; server
+                   (comp ;; ssl connection
+                    (map (fn [{:ssl/keys [cert] :as x}]
+                           (assoc x :ssl/cert (first cert))))
+                    dtls/ssl-rf
+                    nio/datagram-read-rf
+                    (map (fn [{:nio/keys [address] :as x}]
+                           (if address
+                             (assoc x
+                                    :http/host (.getHostName address)
+                                    :http/port (.getPort address))
+                             x)))
+                    nio/datagram-write-rf)
+                   dtls-rf))
+                 nio/readable-rf))
+               nio/close-rf)))]
+     (->> [{:context/bip-size (* 20 4096)
+            :ssl/packet-size 1024
+            :ssl/certs [(dtls/self-cert :cert/alias "server")]
+            :ssl/mode :server
+            :context/buf (ByteBuffer/allocate 100)
+            :stun/password "1234567890123456789012"
+            :stun/ufrag "abcd"
+            :http/local-port 10001}]
+          (into [] xf)))
+   (def x (first *1))
+
+   (-> x :nio/selector (.keys))
+   (->> x :nio/selector (.keys) (map (fn [e]
+                                       (-> e (.channel) (.close))
+                                       (.cancel e))))
+   (-> x :nio/selector (.wakeup))
+
+   (-> x :async/thread (.stop))
+   (-> x :async/thread (.getState))
+   (-> x :nio/selector (.close))
+
+   )
+#_(
+   *ns*
+   (in-ns 'jaq.http.xrf.ice)
+   (require 'jaq.http.xrf.ice :reload)
    *e
 
    ;; dtls client
@@ -1263,7 +1318,7 @@
                  nio/writable-rf))
                nio/close-rf)))]
      (let [port 37104
-           host "192.168.1.140"]
+           host (->> (ips) (first)) #_"192.168.1.140"]
        (->> [{:context/bip-size (* 20 4096)
               :ssl/packet-size 1024
               :ssl/certs certs
@@ -1275,6 +1330,7 @@
    (def x (first *1))
    *e
    (in-ns 'jaq.http.xrf.ice)
+   (ips)
    (ns-unmap *ns* 'y)
    (->> y :ssl/engine (.getSSLContext))
    (->> y :byte)
@@ -1345,4 +1401,5 @@
                          (map (fn [f] (->> (.getAddress f) (map (fn [x] (bit-and 0xff x))) ip))))))
           (set)))
 
+   (ips)
    )

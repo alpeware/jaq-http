@@ -10,9 +10,18 @@
   net.cgrand/xforms
   {:mvn/version "0.19.2", :exclusions [org.clojure/clojurescript org.clojure/clojure]}},
  :aliases
- {:b {:extra-paths ["scripts"], :main-opts ["-m" "build"]},
+ {:b {:extra-paths ["scripts"], :main-opts ["-m" "build"]
+      :extra-deps
+      {org.clojure/clojurescript {:mvn/version "1.10.520"}
+       cljsjs/incremental-dom {:mvn/version "0.5.2-1"}
+       ;;net.java.dev.javacc/javacc {:mvn/version "4.1"}
+       ;;com.google.closure-stylesheets/closure-stylesheets {:mvn/version "1.4.0"}
+       hiccup {:mvn/version "1.0.5"},
+       garden {:mvn/version "1.3.9"},
+       }},
   :u {:extra-paths ["scripts"], :main-opts ["-m" "upload"]},
-  :d {:extra-deps
+  :d {:extra-paths ["scripts"], :main-opts ["-m" "deploy"]},
+  :dev {:extra-deps
       {org.clojure/clojurescript {:mvn/version "1.10.520"}
        cljsjs/incremental-dom {:mvn/version "0.5.2-1"}
        ;;net.java.dev.javacc/javacc {:mvn/version "4.1"}

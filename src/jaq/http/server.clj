@@ -6,7 +6,9 @@
    [jaq.http.server.nio :as nio]
    [jaq.http.xrf.app :as app]
    [jaq.http.xrf.nio :as n]
-   [jaq.http.xrf.server :as server]))
+   [jaq.http.xrf.server :as server]
+   [jaq.http.xrf.signaling :as signaling]
+   [jaq.http.xrf.repl :as repl]))
 
 (set! *warn-on-reflection* true)
 
@@ -40,7 +42,7 @@
            :http/host "localhost"
            :http/scheme :http
            :http/minor 1 :http/major 1}]
-         (into [] repl-xf)
+         (into [] #_repl/repl-rf repl-xf)
          (first)))
   #_(->> (or
         (some-> env :PORT (Integer/parseInt))

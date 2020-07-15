@@ -68,83 +68,83 @@
                       :upnp/st st))))))))))
 
 ;; TODO: fix
-(def services-rf
-  (comp
-   (map (fn [{:upnp/keys [location] :as x}]
-          (assoc x
-                 :upnp/services
-                 (->> locations
-                      (map (fn [uri]
-                             (try
-                               [(let [[scheme base] (-> location (string/split #"://"))]
-                                  (-> base
-                                      (string/split #"/")
-                                      (first)
-                                      (->> (str scheme "://"))))
-                                (xml/parse uri)]
-                               (catch Exception e
-                                 nil))))
-                      (mapcat (fn [[uri doc]]
-                                (let [uri (or (->> (xml-seq doc)
-                                                   (filter (fn [x] (= :URLBase (:tag x))))
-                                                   (map :content)
-                                                   (first)
-                                                   (first))
-                                              uri)]
-                                  (->> (xml-seq doc)
-                                       (filter (fn [x] (= :service (:tag x))))
-                                       (map (fn [{:keys [content]}]
-                                              (->> content
-                                                   (map (fn [node]
-                                                          [(:tag node) (-> node :content first)]))
-                                                   (into {:uri uri}))))))))))))))
+#_(def services-rf
+    (comp
+     (map (fn [{:upnp/keys [location] :as x}]
+            (assoc x
+                   :upnp/services
+                   (->> locations
+                        (map (fn [uri]
+                               (try
+                                 [(let [[scheme base] (-> location (string/split #"://"))]
+                                    (-> base
+                                        (string/split #"/")
+                                        (first)
+                                        (->> (str scheme "://"))))
+                                  (xml/parse uri)]
+                                 (catch Exception e
+                                   nil))))
+                        (mapcat (fn [[uri doc]]
+                                  (let [uri (or (->> (xml-seq doc)
+                                                     (filter (fn [x] (= :URLBase (:tag x))))
+                                                     (map :content)
+                                                     (first)
+                                                     (first))
+                                                uri)]
+                                    (->> (xml-seq doc)
+                                         (filter (fn [x] (= :service (:tag x))))
+                                         (map (fn [{:keys [content]}]
+                                                (->> content
+                                                     (map (fn [node]
+                                                            [(:tag node) (-> node :content first)]))
+                                                     (into {:uri uri}))))))))))))))
 
 ;; TODO: fix
-(def scp-rf
-  (comp
-   (map (fn [{:upnp/keys [services] :as x}]
-          (assoc x
-                 :upnp/scp
-                 (->> services
-                      (map (fn [{:keys [uri SCPDURL] :as service}]
-                             (try
-                               [service
-                                (xml/parse (str uri SCPDURL))]
-                               (catch Exception e
-                                 nil))))
-                      (map (fn [[service doc]]
-                             {:service service
-                              :actions
-                              (->> (xml-seq doc)
-                                   (filter (fn [x] (= :action (:tag x))))
-                                   (map (fn [{:keys [content]}]
-                                          (->> content
-                                               (map (fn [{:keys [tag content] :as node}]
-                                                      (cond
-                                                        (= tag :name)
-                                                        [tag (first content)]
-                                                        (= tag :argumentList)
-                                                        [tag (->> content (map (fn [{:keys [content]}]
-                                                                                 (->> content
-                                                                                      (map (fn [node]
-                                                                                             [(:tag node)
-                                                                                              (-> node :content first)]))
-                                                                                      (into {})))))])))
-                                               (into {})))))
-                              :state
-                              (->> (xml-seq doc)
-                                   (filter (fn [x] (= :stateVariable (:tag x))))
-                                   (map (fn [{:keys [content]}]
-                                          (->> content
-                                               (map (fn [{:keys [tag content] :as node}]
-                                                      (cond
-                                                        (contains? #{:name :dataType :defaultValue} tag)
-                                                        [tag (first content)]
-                                                        (= tag :allowedValueList)
-                                                        [tag (->> content (map (fn [node]
-                                                                                 (-> node :content first)))
-                                                                  #_(into {}))])))
-                                               (into {})))))}))))))))
+#_(def scp-rf
+    (comp
+     (map (fn [{:upnp/keys [services] :as x}]
+            (assoc x
+                   :upnp/scp
+                   (->> services
+                        (map (fn [{:keys [uri SCPDURL] :as service}]
+                               (try
+                                 [service
+                                  (xml/parse (str uri SCPDURL))]
+                                 (catch Exception e
+                                   nil))))
+                        (map (fn [[service doc]]
+                               {:service service
+                                :actions
+                                (->> (xml-seq doc)
+                                     (filter (fn [x] (= :action (:tag x))))
+                                     (map (fn [{:keys [content]}]
+                                            (->> content
+                                                 (map (fn [{:keys [tag content] :as node}]
+                                                        (cond
+                                                          (= tag :name)
+                                                          [tag (first content)]
+                                                          (= tag :argumentList)
+                                                          [tag (->> content (map (fn [{:keys [content]}]
+                                                                                   (->> content
+                                                                                        (map (fn [node]
+                                                                                               [(:tag node)
+                                                                                                (-> node :content first)]))
+                                                                                        (into {})))))])))
+                                                 (into {})))))
+                                :state
+                                (->> (xml-seq doc)
+                                     (filter (fn [x] (= :stateVariable (:tag x))))
+                                     (map (fn [{:keys [content]}]
+                                            (->> content
+                                                 (map (fn [{:keys [tag content] :as node}]
+                                                        (cond
+                                                          (contains? #{:name :dataType :defaultValue} tag)
+                                                          [tag (first content)]
+                                                          (= tag :allowedValueList)
+                                                          [tag (->> content (map (fn [node]
+                                                                                   (-> node :content first)))
+                                                                    #_(into {}))])))
+                                                 (into {})))))}))))))))
 
 (def soap-action-rf
   (comp
@@ -181,6 +181,8 @@
      nio/close-connection))))
 
 #_(
+   (require 'jaq.http.xrf.upnp :reload)
+   (in-ns 'jaq.http.xrf.upnp)
    *e
    ;; uPnP
    (let [host "239.255.255.250"
@@ -201,70 +203,85 @@
                                  "USER-AGENT: alpeware\r\n"
                                  "MX: 2\r\n\r\n"))))
          xf (comp
-             selector-rf
-             (thread-rf
+             nio/selector-rf
+             (nio/thread-rf
               (comp
-               (select-rf
+               (nio/select-rf
                 (comp
-                 (datagram-channel-rf
+                 (nio/datagram-channel-rf
                   (comp
-                   datagram-read-rf
-                   datagram-write-rf
-                   (datagram-send-rf (comp
-                                      (map
-                                       (fn [{:http/keys [host port] :as x}]
-                                         (assoc x :http/req search)))))
+                   (rf/debug-rf ::channel)
+                   nio/datagram-read-rf
+                   (map (fn [{:nio/keys [address] :as x}]
+                          (if address
+                            (assoc x
+                                   :http/host (.getHostName address)
+                                   :http/port (.getPort address))
+                            x)))
+                   nio/datagram-write-rf
+                   (nio/datagram-send-rf (comp
+                                          (map
+                                           (fn [{:http/keys [host port]
+                                                 :nio/keys [selection-key]
+                                                 :as x}]
+                                             (prn ::search search)
+                                             (assoc x :http/req search)))))
                    (rf/debug-rf ::sent)
                    (rf/repeatedly-rf
-                    (datagram-receive-rf (comp
-                                          (map (fn [{:keys [byte] :as x}]
-                                                 (assoc x :char (char byte))))
-                                          header/response-line
-                                          header/headers
-                                          #_(map (fn [{:keys [headers char] :as x}]
-                                                   (prn char headers)
-                                                   x))
-                                          (take 1)
-                                          (map (fn [{:context/keys [devices]
-                                                     :keys [headers char]
-                                                     {:keys [location usn st]} :headers
-                                                     :as x}]
-                                                 (vswap! devices conj headers)
-                                                 (prn st usn location)
-                                                 x))
-                                          #_(drop-while (fn [{:keys [char]}]
-                                                          true
-                                                          #_(not= char \n)))
-                                          #_(fn [rf]
-                                              (let [val (volatile! nil)
-                                                    vacc (volatile! nil)]
-                                                (fn
-                                                  ([] (rf))
-                                                  ([acc] (rf acc))
-                                                  ([acc {:keys [char] :as x}]
-                                                   (vswap! vacc conj char)
-                                                   (cond
-                                                     @val
-                                                     (->> (assoc x :upnp/gateway @val)
-                                                          (rf acc))
-
-                                                     (not= char \n)
-                                                     (do
+                    (nio/datagram-receive-rf (comp
+                                              (map (fn [{:keys [byte] :as x}]
+                                                     (assoc x :char (char byte))))
+                                              header/response-line
+                                              header/headers
+                                              #_(map (fn [{:keys [headers char] :as x}]
+                                                       (prn char headers)
+                                                       x))
+                                              (take 1)
+                                              (map (fn [{:context/keys [devices]
+                                                         :keys [headers char]
+                                                         {:keys [location usn st]} :headers
+                                                         :as x}]
+                                                     (vswap! devices conj headers)
+                                                     (prn st usn location)
+                                                     x))
+                                              #_(drop-while (fn [{:keys [char]}]
+                                                              true
+                                                              #_(not= char \n)))
+                                              #_(fn [rf]
+                                                  (let [val (volatile! nil)
+                                                        vacc (volatile! nil)]
+                                                    (fn
+                                                      ([] (rf))
+                                                      ([acc] (rf acc))
+                                                      ([acc {:keys [char] :as x}]
                                                        (vswap! vacc conj char)
-                                                       acc)))))))))))))
-               close-rf)))]
+                                                       (cond
+                                                         @val
+                                                         (->> (assoc x :upnp/gateway @val)
+                                                              (rf acc))
+
+                                                         (not= char \n)
+                                                         (do
+                                                           (vswap! vacc conj char)
+                                                           acc)))))))))))
+                 nio/writable-rf))
+               nio/close-rf)))]
      (->> [{:context/bip-size (* 1 4096)
             :context/devices (volatile! nil)
+            :context/search search
             :http/host host
             :http/port port
-            :http/local-port port
+            ;;:http/local-port 2222
             ;;:http/local-host "192.168.1.140"
             ;;:http/local-host "172.17.0.2"
             }]
           (into [] xf)))
    (def x (first *1))
    *1
+   *e
 
+   (->> x :async/thread (.getState))
+   (->> x :nio/selector (.keys))
    (->> x :nio/selector (.keys) (map (fn [e]
                                        (-> e (.channel) (.close))
                                        (.cancel e))))
@@ -314,7 +331,7 @@
    (last services)
 
    (->> services
-        #_(filter (fn [{:keys [serviceType]}]
+        (filter (fn [{:keys [serviceType]}]
                     (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"
                                 serviceType)))
         (map (fn [{:keys [uri SCPDURL] :as service}]
@@ -372,12 +389,16 @@
                                          (string/includes? serviceType "WANIP")))
                       (first))
          service-type (:serviceType service)
-         action "GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
-         args {} #_{:NewPortMappingIndex "0"} #_{:NewRemoteHost "" :NewProtocol "TCP"
-                                                 :NewExternalPort "8080"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
+         action #_"GetExternalIPAddress" "AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
+         args #_{} #_{:NewPortMappingIndex "0"} #_{:NewRemoteHost "" :NewProtocol "UDP"
+                                                 :NewExternalPort "60000"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
                                                                              :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
                                                                              :NewEnabled "1" :NewPortMappingDescription "alpeware"
-                                                                             :NewLeaseDuration "0"}
+                                                                            :NewLeaseDuration "0"}
+         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
+          :NewInternalClient "192.168.1.140" :NewInternalPort "60000"
+          :NewEnabled "1" :NewPortMappingDescription "stun"
+          :NewLeaseDuration "0"}
          soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
                                                     :SOAP-ENV:encodingStyle "http://schemas.xmlsoap.org/soap/encoding/"}
                     :content [{:tag :SOAP-ENV:Body
@@ -391,16 +412,16 @@
          [host port] (-> service :uri (string/replace "http://" "") (string/split #":"))
          port (Integer/parseInt port)
          xf (comp
-             selector-rf
-             (thread-rf
+             nio/selector-rf
+             (nio/thread-rf
               (comp
-               (select-rf
+               (nio/select-rf
                 (comp
-                 (channel-rf
+                 (nio/channel-rf
                   (comp
-                   read-rf
-                   write-rf
-                   (send-rf (comp
+                   nio/read-rf
+                   nio/write-rf
+                   (nio/send-rf (comp
                              (map
                               (fn [{:http/keys [host port] :as x}]
                                 (prn soap)
@@ -410,23 +431,23 @@
                                        :http/body soap)))
                              http/http-rf))
                    #_(rf/debug-rf ::sent)
-                   readable-rf
-                   (receive-rf (comp
+                   nio/readable-rf
+                   (nio/receive-rf (comp
                                 (map (fn [{:keys [byte] :as x}]
                                        (assoc x :char (char byte))))
                                 header/response-line
                                 header/headers
                                 http/chunked-rf
                                 http/text-rf
-                                body-rf
+                                nio/body-rf
                                 (map (fn [{:http/keys [body]
                                            :keys [status reason headers]
                                            :as x}]
                                        (prn status reason headers)
                                        (prn body)
                                        x))))
-                   close-connection))))
-               close-rf)))]
+                   nio/close-connection))))
+               nio/close-rf)))]
      (->> [{:context/bip-size (* 1 4096)
             :http/scheme :http
             :http/path path
@@ -436,5 +457,8 @@
             :http/minor 1 :http/major 1}]
           (into [] xf)))
    (def x (first *1))
+
+   x
+   *e
 
    )

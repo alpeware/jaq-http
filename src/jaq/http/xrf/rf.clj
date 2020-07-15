@@ -79,6 +79,36 @@
              (rf acc x'))
            acc))))))
 
+(defn repeat-rf [n xf]
+  (fn [rf]
+    (let [i (volatile! n)
+          val (volatile! nil)
+          vacc (volatile! nil)
+          init (fn [] (xf (result-fn)))
+          xf-rf (volatile! (init))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (if (> @i 0)
+           (do
+             (@xf-rf acc x)
+             (if-let [x' (@xf-rf)]
+               (do
+                 (vreset! xf-rf (init))
+                 (vswap! i dec)
+                 (if (= @i 0)
+                   (rf acc x')
+                   acc))
+               acc))
+           (rf acc x)))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.rf)
+   (into [] (repeat-rf 5 (comp
+                          (map inc))) (range 10))
+   )
+
 (defn one-rf [k xf]
   (fn [rf]
     (let [once (volatile! false)

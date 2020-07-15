@@ -193,13 +193,13 @@
                        :nio/keys [^SelectionKey selection-key]
                        :http/keys [host port]
                        :as x}]
-  (let [^DatagramChannel channel (.channel selection-key)
-        target (address host port)]
+  (let [^DatagramChannel channel (.channel selection-key)]
     (let [bb (block)]
-      (when (.hasRemaining bb)
-        (send-datagram-channel channel target bb)
-        (prn ::wrote (.position bb) ::to target)
-        (decommit bb))
+      (when (and (.hasRemaining bb) host port)
+        (let [target (address host port)]
+          (send-datagram-channel channel target bb)
+          (prn ::wrote (.position bb) ::to target)
+          (decommit bb)))
       (.position bb))))
 
 #_(
@@ -638,7 +638,10 @@
          (when-not @channel
            (->> (datagram-channel!)
                 (non-blocking)
-                (datagram-bind! (when local-port (address local-port)))
+                (datagram-bind! (cond
+                                  (and local-host local-port) (address local-host local-port)
+                                  local-port (address local-port)
+                                  :else nil))
                 (vreset! channel)
                 #_(datagram-connect! (address host port))
                 (datagram-register! selector
@@ -667,6 +670,9 @@
                      :nio/channel @channel
                      :nio/selection-key ^SelectionKey @selection-key)
               (rf acc)))))))
+#_(
+   (in-ns 'jaq.http.xrf.nio)
+   )
 
 (defn datagram-bind-rf [xf]
   (fn [rf]
@@ -1601,9 +1607,9 @@
                          (-> x
                              (dissoc :http/json :http/body :http/chunks :http/headers :ssl/engine)
                              (assoc :http/params {:bucket "staging.alpeware-foo-bar.appspot.com"
-                                                  :prefix "app/v7"}
+                                                  :prefix "app/v8"}
                                     :http/host storage/root
-                                    :storage/prefix "app/v7"
+                                    :storage/prefix "app/v8"
                                     :appengine/id (str (System/currentTimeMillis))
                                     :appengine/app "alpeware-foo-bar"
                                     :appengine/service :default

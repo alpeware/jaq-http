@@ -19,14 +19,7 @@
 
    (range 10)
 
-   (into [] (comp
-             (map inc)
-             #?(:cljs (take 1)
-                :clj (take 10)))
-         (range 20))
-
    (require 'cljs.core)
-   #?(:cljs :foo :clj :clj)
 
    (register!
     (gdom/getElement "state")

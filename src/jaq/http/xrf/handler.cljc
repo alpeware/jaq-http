@@ -1,6 +1,7 @@
 (ns jaq.http.xrf.handler
   #?(:cljs
      (:require [cljs.core]
+               [goog.events]
                [clojure.pprint :refer [pprint]]
                [clojure.string :as string]
                [goog.dom :as dom]
