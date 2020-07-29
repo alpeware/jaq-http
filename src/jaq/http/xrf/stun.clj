@@ -88,30 +88,30 @@
 
 (def secure-random (SecureRandom.))
 
+(defn ip [v]
+  (cond
+    (= (count v) 4)
+    (string/join "."
+                 (->> v
+                      (map (fn [e] (bit-and e 0xff)))
+                      (map str)))
+    (= (count v) 16)
+    (string/join ":"
+                 (->> v
+                      (map (fn [e] (bit-and e 0xff)))
+                      (map (fn [x] (Integer/toHexString x)))
+                      (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
+                      (partition 2)
+                      (map (fn [[a b]] (str a b)))))))
 (defn ips []
-  (let [ip (fn [v]
-             (cond
-               (= (count v) 4)
-               (string/join "."
-                            (->> v
-                                 (map (fn [e] (bit-and e 0xff)))
-                                 (map str)))
-               (= (count v) 16)
-               (string/join ":"
-                            (->> v
-                                 (map (fn [e] (bit-and e 0xff)))
-                                 (map (fn [x] (Integer/toHexString x)))
-                                 (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
-                                 (partition 2)
-                                 (map (fn [[a b]] (str a b)))))))]
-    (->> (NetworkInterface/getNetworkInterfaces)
-         (enumeration-seq)
-         (mapcat (fn [e]
-                   (->> (.getInetAddresses e)
-                        (enumeration-seq)
-                        (remove (fn [f] (.isLoopbackAddress f)))
-                        (map (fn [f] (->> (.getAddress f) (map (fn [x] (bit-and 0xff x))) ip))))))
-         (set))))
+  (->> (NetworkInterface/getNetworkInterfaces)
+       (enumeration-seq)
+       (mapcat (fn [e]
+                 (->> (.getInetAddresses e)
+                      (enumeration-seq)
+                      (remove (fn [f] (.isLoopbackAddress f)))
+                      (map (fn [f] (->> (.getAddress f) (map (fn [x] (bit-and 0xff x))) ip))))))
+       (set)))
 
 #_(
    (ips)
@@ -137,18 +137,34 @@
          id (transaction-id)]
      (.put buf (byte-array id)))
 
-   (let [ip "192.168.1.140"]
-     (->> (string/split ip ".") #_(map (fn [x] (Integer/parseInt x))) #_(map unchecked-byte)))
+   (let [ip "2605:a601:aaf7:9500:86df:7d47:dbb4:86a9"]
+     (->> (string/split ip #":")
+          (map (fn [x] (Integer/parseInt x 16)))
+          (mapcat (fn [x]
+                    [(-> x (bit-shift-right 8))
+                     (-> x (bit-and 0x00ff))]))
+          (map unchecked-byte)))
+
    )
 
 (def encode-map
   {:xor-mapped-address (fn [{:stun/keys [buf attr id family port ip] :as x}]
                          (let [attr-type (get attributes attr)
-                               attr-length 8
                                address-family (get families family)
+                               attr-length (if (= family :ipv4) (+ 4 4) (+ 4 16))
                                xport [(bit-shift-right port 8) (bit-and port 0xff)]
                                ;; TODO: IPv6
-                               xip (->> (string/split ip #"\.") (map (fn [x] (Integer/parseInt x))) (map unchecked-byte))]
+                               xip (if (= family :ipv4)
+                                     (->> (string/split ip #"\.")
+                                          (map (fn [x] (Integer/parseInt x)))
+                                          (map unchecked-byte))
+                                     (->> (string/split ip #":")
+                                          (map (fn [x] (Integer/parseInt x 16)))
+                                          (mapcat (fn [x]
+                                                    [(-> x (bit-shift-right 8))
+                                                     (-> x (bit-and 0x00ff))]))
+                                          (map unchecked-byte))
+                                     )]
                            (prn ::port port ::ip ip)
                            (-> buf
                                (.putShort attr-type)
@@ -161,7 +177,7 @@
                              (->> (bit-xor x y)
                                   (unchecked-byte)
                                   (.put buf)))
-                           (doseq [[x y] (->> (interleave xip magic-bytes)
+                           (doseq [[x y] (->> (interleave xip (concat magic-bytes id))
                                               (mapv (fn [x]
                                                       (bit-and x 0xff)))
                                               (partition 2))]
@@ -251,7 +267,23 @@
                         (.putShort attr-type)
                         (.putShort attr-length))
                     ;; add crc
-                    (doseq [[x y] (-> crc32
+                    ;; TODO: clean up
+                    (->> crc32
+                        (.getValue)
+                        (bit-xor 0x5354554e)
+                        (bit-and 0xffffffff)
+                        (biginteger)
+                        (.toByteArray)
+                        (seq)
+                        (concat [0 0 0 0])
+                        (reverse)
+                        (take 4)
+                        (reverse)
+                        (map (fn [e] (bit-and e 0xff)))
+                        ((fn [e] (prn ::crc e (count e)) e))
+                        (byte-array)
+                        (.put buf))
+                    #_(doseq [[x y] (-> crc32
                                       (.getValue)
                                       (biginteger)
                                       (.toByteArray)
@@ -273,23 +305,97 @@
          (interleave xor-bytes)
          (->> (partition 2))))
 
-   [[0x00 0x01 0x00 0x58
-     0x21 0x12 0xa4 0x42
-     0xb7 0xe7 0xa7 0x01 0xbc 0x34 0xd6 0x86 0xfa 0x87 0xdf 0xae
-     0x80 0x22 0x00 0x10]
-    (->> "STUNtestclient  " (map int) (map unchecked-byte) (doall))
-    [
-     0x00 0x24 0x00 0x04
-     0x6e 0x00 0x01 0xff
-     0x80 0x29 0x00 0x08
-     0x93 0x2f 0xf9 0xb1 0x51 0x26 0x3b 0x36
-     0x00 0x06 0x00 0x09
-     0x65 0x76 0x74 0x6a 0x3a 0x68 0x36 0x76 0x59 0x20 0x20 0x20
-     0x00 0x08 0x00 0x14
-     0x9a 0xea 0xa7 0x0c 0xbf 0xd8 0xcb 0x56 0x78 0x1e 0xf2 0xb5
-     0xb2 0xd3 0xf2 0x49 0xc1 0xb5 0x71 0xa2
-     0x80 0x28 0x00 0x04
-     0xe5 0x7a 0x3b 0xcf]]
+   (let [xor-bytes [0x53 0x54 0x55 0x4e]
+         crc32 (CRC32.)
+         buf (ByteBuffer/allocate 4)]
+     (.update crc32 (.getBytes "foobar"))
+     (->> crc32 (.getValue)
+          (bit-xor 0x5354554e)
+          (bit-and 0xffffffff)
+          (biginteger)
+          (.toByteArray)
+          (seq)
+          (concat [0 0 0])
+          (reverse)
+          (take 8)
+          (reverse)
+          (map (fn [e] (bit-and e 0xff)))
+          #_((fn [e] (count e)))
+          #_(byte-array)
+          #_(.put buf))
+     )
+
+   (->> [1 2 3]
+        (concat [0 0 0]))
+   ;; 12 + 8 = 20
+   (let [acc [0x0001 0x004c 0x2112 0xa442 0x4a4f 0x4244 0x5578 0x4968
+              0x6c47 0x6d6e 0x0006 0x0009 0x756f 0x3075 0x3a6b 0x6457
+              0x7300 0x0000 0xc057 0x0004 0x0000 0x03e7 0x8029 0x0008
+              0xe197 0xa857 0x286b 0xe92e 0x0024 0x0004 0x6e00 0x28ff
+              0x0008 0x0014 0x86b2 0x00f9 0xbece 0x4794 0x353f 0x6360
+              0xf1cb 0x742d 0xd96b 0x0a0b 0x8028 0x0004 0x2b2d 0xe103]
+         buf (->> acc (count) (* 4) (ByteBuffer/allocate))
+         _ (->> acc (map (fn [e]
+                           (-> e (bit-shift-right 8) (unchecked-byte) (->> (.put buf)))
+                           (-> e (bit-and 0x00ff) (unchecked-byte) (->> (.put buf)))
+                           #_(->> e (bit-and 0xffff) (.putInt buf))))
+                (doall))
+         _ (.flip buf)
+         {:keys [message length id]} (decode buf)
+         {:stun/keys [crc-32] :as x} (loop [x' (->> {:stun/buf buf :stun/message message :stun/length length :stun/id id}
+                                                    (decode-attributes))]
+                                       (if-not (.hasRemaining buf)
+                                         x'
+                                         (recur (decode-attributes x'))))
+         _ (.clear buf)
+         _ (->> (assoc x :stun/attributes [:xor-mapped-address :fingerprint])
+                (encode))
+         _ (decode buf)
+         {crc :stun/crc-32 :as y} (loop [x' (->> {:stun/buf buf}
+                                                 (decode-attributes))]
+                                    (if-not (.hasRemaining buf)
+                                      x'
+                                      (recur (decode-attributes x'))))]
+     #_x
+     [crc-32 crc length]
+     )
+   *e
+
+
+
+
+   (let [acc [0x0101 0x0038 0x2112 0xa442 0x4a4f 0x4244 0x5578 0x4968
+              0x6c47 0x6d6e 0x0020 0x0014 0x0002 0xb55f 0x0717 0x0243
+              0xe0b8 0xd744 0xd3a7 0x342f 0xb7f3 0xebc7 0x0008 0x0014
+              0x8961 0x7016 0x01a2 0x75e7 0x95d3 0x3c7c 0xaac0 0xacd0
+              0x7e5c 0xac5c 0x8028 0x0004 0x1014 0x60c0]
+         buf (->> acc (count) (* 3) (ByteBuffer/allocate))
+         _ (->> acc (map (fn [e]
+                           e
+                           (-> e (bit-shift-right 8) (unchecked-byte) (->> (.put buf)))
+                           (-> e (bit-and 0x00ff) (unchecked-byte) (->> (.put buf)))
+                           #_(->> e (bit-and 0xffff) (.putInt buf))))
+                (doall))
+         _ (.flip buf)
+         {:keys [message length id]} (decode buf)
+         {:stun/keys [crc-32] :as x} (loop [x' (->> {:stun/buf buf :stun/message message :stun/length length :stun/id id}
+                                                    (decode-attributes))]
+                                       (if-not (.hasRemaining buf)
+                                         x'
+                                         (recur (decode-attributes x'))))
+         _ (prn x)
+         _ (.clear buf)
+         _ (->> (assoc x :stun/attributes [:xor-mapped-address :fingerprint])
+                (encode))
+         _ (decode buf)
+         {crc :stun/crc-32 :as y} (loop [x' (->> {:stun/buf buf}
+                                                 (decode-attributes))]
+                                    (if-not (.hasRemaining buf)
+                                      x'
+                                      (recur (decode-attributes x'))))]
+     #_x
+     [crc-32 crc length x])
+   *e
 
    (let [message [0x01 0x01 0x00 0x3c
                   0x21 0x12 0xa4 0x42
@@ -321,6 +427,72 @@
                                       (recur (decode-attributes x'))))]
      [crc-32 crc length])
 
+
+   ;; Computed FINGERPRINT f80b81d8
+   ;; Invalid FINGERPRINT 0x53ff0a9a
+   (let [message [0x01 0x01 0x00 0x2c 0x21 0x12
+                  0xa4 0x42 0x96 0x54 0x39 0xaf 0x26 0x83 0xfc 0xc1 0x02 0xe8 0x01 0x37 0x00 0x20
+                  0x00 0x08 0x00 0x01 0xea 0xcb 0xe1 0xba 0xa5 0xce 0x00 0x08 0x00 0x14 0x30 0x1e
+                  0xda 0x03 0xe4 0x8a 0x1b 0xca 0x97 0x11 0x8d 0xac 0x0e 0xd6 0x1d 0x42 0x94 0x57
+                  0x04 0xdd 0x80 0x28 0x00 0x04 0x53 0xff 0x0a 0x9a]
+         buf (->> message (map unchecked-byte) (byte-array) (ByteBuffer/wrap))
+         {:keys [message length id]} (decode buf)
+         {:stun/keys [crc-32] :as x} (loop [x' (->> {:stun/buf buf :stun/message message :stun/length length :stun/id id}
+                                                    (decode-attributes))]
+                                       (if-not (.hasRemaining buf)
+                                         x'
+                                         (recur (decode-attributes x'))))
+         _ (.clear buf)
+         _ (->> (assoc x
+                       :stun/password "1234567890123456789012" #_"d9abffcf3f8e34ae076aee0725bf85a5"
+                       :stun/attributes [:xor-mapped-address :message-integrity :fingerprint])
+                (encode))
+         {:keys [message length id]} (decode buf)
+         {crc :stun/crc-32 :as y} (loop [x' (->> {:stun/buf buf :stun/message message :stun/length length :stun/id id}
+                                                 (decode-attributes))]
+                                    (if-not (.hasRemaining buf)
+                                      x'
+                                      (recur (decode-attributes x'))))]
+     [crc-32 crc length x y])
+
+
+
+   ;; Computed MESSAGE-INTEGRITY [20]=5572ec2db7ab71d9379831ae388dab075cc885ce
+   ;; (stun/DEBUG) Computed FINGERPRINT a243dd0f
+   ;; (stun/WARNING) Invalid FINGERPRINT 53a542c6
+   (let [message [0x01 0x01 0x00 0x2c 0x21 0x12
+                  0xa4 0x42 0xb4 0x5e 0x21 0x5f 0x4e 0xf8 0x3c 0x16 0x07 0x04 0xdd 0x94 0x00 0x20
+                  0x00 0x08 0x00 0x01 0x86 0xd4 0xe1 0xba 0xa5 0xce 0x00 0x08 0x00 0x14 0x55 0x72
+                  0xec 0x2d 0xb7 0xab 0x71 0xd9 0x37 0x98 0x31 0xae 0x38 0x8d 0xab 0x07 0x5c 0xc8
+                  0x85 0xce 0x80 0x28 0x00 0x04 0x53 0xa5 0x42 0xc6]
+         buf (->> message (map unchecked-byte) (byte-array) (ByteBuffer/wrap))
+         {:keys [message length id]} (decode buf)
+         {:stun/keys [crc-32] :as x} (loop [x' (->> {:stun/buf buf :stun/message message :stun/length length :stun/id id}
+                                                    (decode-attributes))]
+                                       (if-not (.hasRemaining buf)
+                                         x'
+                                         (recur (decode-attributes x'))))
+         _ (.clear buf)
+         _ (->> (assoc x
+                       :stun/password "1234567890123456789012" #_"d9abffcf3f8e34ae076aee0725bf85a5"
+                       :stun/attributes [:xor-mapped-address :message-integrity :fingerprint])
+                (encode))
+         {:keys [message length id]} (decode buf)
+         {crc :stun/crc-32 :as y} (loop [x' (->> {:stun/buf buf :stun/message message :stun/length length :stun/id id}
+                                                 (decode-attributes))]
+                                    (if-not (.hasRemaining buf)
+                                      x'
+                                      (recur (decode-attributes x'))))]
+     [crc-32 crc length x y])
+
+   (->> 0x53a542c6 (biginteger) (.toByteArray) (seq) (map (fn [e] (bit-and 0xff e))))
+   (->> 0xa243dd0f (biginteger) (bit-and 0xff) (.toByteArray) (seq) (map (fn [e] (bit-and 0xff e))))
+
+   (->> [0xa2 0x43 0xdd 0x0f] (map (fn [e] (bit-and 0xff e))))
+
+   (in-ns 'jaq.http.xrf.stun)
+
+
    (let [xport [0xa1 0x47]]
      (->> (interleave xport (->> magic-bytes (take 2) #_(drop 2)))
           (map (fn [x]
@@ -333,8 +505,7 @@
           (.getShort)
           (bit-and 0xffff)))
 
-   *e
-   )
+   *e)
 
 (defn encode [{:stun/keys [buf message id attributes] :as x}]
   ;; header
@@ -357,6 +528,7 @@
   (let [end (.position buf)
         ;; should be a multiple of 4
         length (- end 20)]
+    (prn ::length length)
     (-> buf
         (.reset)
         (.putShort length)
@@ -417,14 +589,15 @@
   (let [msg (.getShort buf)
         length (.getShort buf)
         cookie (.getInt buf)
-        id (->> (range id-len) (mapv (fn [_] (.get buf))))]
-    (prn ::stun ::decode (get message-map msg))
+        id (->> (range id-len) (mapv (fn [_] (bit-and 0xff (.get buf)))))]
+    (prn ::stun ::decode (get message-map msg) msg)
     {:message (get message-map msg)
      :length length
      :cookie cookie
      :id id}))
 
 #_(
+   (in-ns 'jaq.http.xrf.stun)
    (->> y :stun/buf (.rewind) (decode))
    (->> y :stun/vacc)
    (let [buf (->> y :stun/vacc
@@ -448,7 +621,14 @@
                          (let [family (.getShort buf)
                                xport [(.get buf) (.get buf)]
                                ;; TODO: IPv6
-                               xip [(.get buf) (.get buf) (.get buf) (.get buf)]]
+                               _ (prn ::family family ::xport xport ::remaining (.remaining buf))
+                               xip (if (= :ipv4 (get family-map family))
+                                     [(.get buf) (.get buf) (.get buf) (.get buf)]
+                                     [(.get buf) (.get buf) (.get buf) (.get buf)
+                                      (.get buf) (.get buf) (.get buf) (.get buf)
+                                      (.get buf) (.get buf) (.get buf) (.get buf)
+                                      (.get buf) (.get buf) (.get buf) (.get buf)])]
+                           (prn ::xip xip)
                            (assoc x
                                   :stun/family (get family-map family)
                                   :stun/port (->> (interleave xport (->> magic-bytes (take 2) #_(drop 2)))
@@ -461,15 +641,13 @@
                                                   (ByteBuffer/wrap)
                                                   (.getShort)
                                                   (bit-and 0xffff))
-                                  :stun/ip (string/join
-                                            "."
-                                            (->> (interleave xip magic-bytes)
-                                                 (map (fn [x]
-                                                        (bit-and x 0xff)))
-                                                 (partition 2)
-                                                 (map (fn [[x y]]
-                                                        (bit-xor x y)))
-                                                 (map str))))))
+                                  :stun/ip (->> (interleave xip (concat magic-bytes id))
+                                                (map (fn [x]
+                                                       (bit-and x 0xff)))
+                                                (partition 2)
+                                                (map (fn [[x y]]
+                                                       (bit-xor x y)))
+                                                (ip)))))
    :mapped-address (fn [{:stun/keys [id buf] :as x}]
                      (let [family (.getShort buf)
                            port (-> buf (.getShort) (bit-and 0xffff))
@@ -500,13 +678,14 @@
                        number (-> buf (.get) (bit-and 0xff))
                        error-code (-> code (* 100) (+ number))
                        reason (->> (range)
-                                   (take attr-length)
+                                   (take (- attr-length 2 1 1))
                                    (map (fn [_] (.get buf)))
                                    (map (fn [e] (bit-and e 0xff)))
                                    (map char)
                                    (apply str))
                        padding (-> attr-length (mod -4) -)]
                    (->> (range) (take padding) (map (fn [_] (.get buf))) (doall))
+                   (prn ::error error-code reason)
                    (assoc x
                           :stun/error-code error-code
                           :stun/reason reason)))
@@ -563,6 +742,7 @@
                                     (doall))
                         padding (-> attr-length (mod -4) -)]
                     (->> (range) (take padding) (map (fn [_] (.get buf))) (doall))
+                    (prn ::fingerprint crc-32)
                     (assoc x :stun/crc-32 crc-32)))})
 
 #_(

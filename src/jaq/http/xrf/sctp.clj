@@ -82,6 +82,21 @@
 (def parameter-map
   (->> parameters (map (fn [[k v]] [v k])) (into {})))
 
+(def errors
+  {1 "Invalid Stream Identifier"
+   2 "Missing Mandatory Parameter"
+   3 "Stale Cookie Error"
+   4 "Out of Resource"
+   5 "Unresolvable Address"
+   6 "Unrecognized Chunk Type"
+   7 "Invalid Mandatory Parameter"
+   8 "Unrecognized Parameters"
+   9 "No User Data"
+   10 "Cookie Received While Shutting Down"
+   11 "Restart of an Association with New Addresses"
+   12 "User Initiated Abort"
+   13 "Protocol Violation"})
+
 (def hmacs
   {:sha-1 1
    :sha-256 3})
@@ -246,7 +261,20 @@
                     :sctp/dups dups)))
    :heartbeat (fn [{:sctp/keys [buf chunk-length] :as x}]
                 (let []
-                  x))})
+                  x))
+   :abort (fn [{:sctp/keys [buf chunk-length] :as x}]
+            (let [cause (-> buf (.getShort) (bit-and 0xffff))
+                  cause-length (-> buf (.getShort) (bit-and 0xffff))
+                  cause-info (->> (range)
+                                  (take cause-length)
+                                  (map (fn [_] (.get buf)))
+                                  (map (fn [e] (bit-and e 0xff)))
+                                  (doall))]
+              (assoc x
+                     :sctp/error-cause cause
+                     :sctp/error-length cause-length
+                     :sctp/error-message (get errors cause)
+                     :sctp/error-information cause-info)))})
 
 #_(
    (in-ns 'jaq.http.xrf.sctp)
@@ -336,7 +364,9 @@
                                   (map (fn [e] (get chunk-map e e)))
                                   (into [])
                                   (doall))]
-                   (run! (fn [_] (.get buf)) (->> param-padding (range)))
+                   ;; TODO: exception in FF
+                   (when (>= (.remaining buf) param-padding)
+                     (run! (fn [_] (.get buf)) (->> param-padding (range))))
                    (assoc x :sctp/extensions types)))
    :random (fn [{:sctp/keys [param-length param-padding buf] :as x}]
              (let [random (->> (range)
@@ -922,8 +952,8 @@
              ;; encode payload
              (f x)
              #_(let [padding (-> buf (.position) (- start) (mod -4) -)]
-               (prn ::data ::padding padding)
-               (run! (fn [_] (.put buf (byte 0))) (range padding)))))
+                 (prn ::data ::padding padding)
+                 (run! (fn [_] (.put buf (byte 0))) (range padding)))))
    ;; TODO: send SACK for received message
    ;; TODO: process multiple incoming chunks
    :sack (fn [{:sctp/keys [buf tsn tsn-ack window gaps dups]
@@ -946,7 +976,11 @@
    :heartbeat-ack (fn [{:sctp/keys [buf heartbeat] :as x}]
                     (let [length (count heartbeat)
                           val (->> heartbeat (byte-array))]
-                      (opt-param! buf :heartbeat length val false)))})
+                      (opt-param! buf :heartbeat length val false)))
+   :heartbeat (fn [{:sctp/keys [buf heartbeat] :as x}]
+                (let [length (count heartbeat)
+                      val (->> heartbeat (byte-array))]
+                  (opt-param! buf :heartbeat length val false)))})
 
 #_(
    *ns*

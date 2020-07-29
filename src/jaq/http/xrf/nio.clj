@@ -18,6 +18,7 @@
    [jaq.http.xrf.rf :as rf]
    [net.cgrand.xforms :as x])
   (:import
+   [java.io IOException]
    [java.nio.channels.spi AbstractSelectableChannel]
    [java.nio.channels
     CancelledKeyException ClosedChannelException
@@ -78,8 +79,11 @@
 
 (defn ^Selector selector! [] (Selector/open))
 
-(defn select! [^Selector selector]
-  (.select selector))
+(defn select!
+  ([^Selector selector]
+   (.select selector))
+  ([^Selector selector ^long timeout]
+   (.select selector timeout)))
 
 (defn register! [^Selector selector attachment ^SelectableChannel channel]
   (.register channel
@@ -144,8 +148,11 @@
               :as x}]
   (let [^ByteChannel channel (.channel selection-key)]
     (let [bb (reserve)
-          n (->> bb
-                 (read-channel channel))]
+          n (try
+              (->> bb (read-channel channel))
+              (catch IOException ex
+                (prn ::read ::ioexception ex)
+                -1))]
       (cond
         (< n 0) ;; end of stream
         (do
@@ -215,9 +222,14 @@
   (let [^ByteChannel channel (.channel selection-key)]
     (let [bb (block)]
       (when (.hasRemaining bb)
-        (write-channel channel bb)
-        #_(prn ::wrote (.position bb))
-        (decommit bb))
+        (try
+          (write-channel channel bb)
+          (decommit bb)
+          (catch IOException ex
+            (prn ::eos selection-key)
+            (.interestOps selection-key 0)
+            (.cancel selection-key)))
+        #_(prn ::wrote (.position bb)))
       (.position bb))))
 
 (def readable-rf
@@ -426,7 +438,7 @@
                  acc)
                (do
                  (loop []
-                   (->> (assoc x :byte (.get bb))
+                   (->> (assoc x :byte (-> bb (.get) (bit-and 0xff)))
                         (xrf acc))
                    (when (and (.hasRemaining bb) (not (xrf)))
                      (recur)))
@@ -835,7 +847,8 @@
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:nio/keys [^Selector selector]
+        ([acc {:nio/keys [^Selector selector ^long timeout]
+               :or {timeout 0}
                :as x}]
          (when-not @once
            (-> (xf (rf/result-fn))
@@ -844,7 +857,7 @@
          (if (-> selector (.keys) (empty?))
            (rf acc x)
            (do
-             (when (> (select! selector) 0)
+             (when (> (select! selector timeout) 0)
                (let [^Set keys-set (.selectedKeys selector)
                      selected-keys (into #{} keys-set)]
                  (.clear keys-set)
@@ -1964,8 +1977,8 @@
 
    (->> services
         #_(filter (fn [{:keys [serviceType]}]
-                  (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"
-                              serviceType)))
+                    (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"
+                                serviceType)))
         (map (fn [{:keys [uri SCPDURL] :as service}]
                (try
                  [service
@@ -2023,10 +2036,10 @@
          service-type (:serviceType service)
          action  "DeletePortMapping" #_"GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
          args  #_{:NewPortMappingIndex "0"} {:NewRemoteHost "" :NewProtocol "TCP"
-               :NewExternalPort "8080"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
-               :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
-               :NewEnabled "1" :NewPortMappingDescription "alpeware"
-                 :NewLeaseDuration "0"}
+                                             :NewExternalPort "8080"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
+                                                                         :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
+                                                                         :NewEnabled "1" :NewPortMappingDescription "alpeware"
+                                                                         :NewLeaseDuration "0"}
          soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
                                                     :SOAP-ENV:encodingStyle "http://schemas.xmlsoap.org/soap/encoding/"}
                     :content [{:tag :SOAP-ENV:Body

@@ -3,6 +3,8 @@
 
   Helpful resources:
   - https://tools.ietf.org/html/rfc5245
+  - https://tools.ietf.org/html/rfc7983
+  - https://tools.ietf.org/html/draft-aboba-avtcore-quic-multiplexing-00
   "
   (:require
    [clojure.string :as string]

@@ -11,20 +11,21 @@
    [jaq.http.xrf.params :as params])
   (:import
    [java.math BigInteger]
-   [java.io ByteArrayInputStream]
+   [java.io ByteArrayInputStream FileOutputStream FileInputStream
+    ObjectOutputStream ObjectInputStream IOException]
    [java.nio.channels
     CancelledKeyException ClosedChannelException
     ServerSocketChannel Selector SelectionKey SocketChannel SelectableChannel]
    [java.nio ByteBuffer CharBuffer]
+   [java.security.cert X509Certificate]
+   [java.security PrivateKey SecureRandom KeyStore MessageDigest]
+   [java.util.concurrent ConcurrentLinkedDeque]
+   [java.util Date Base64]
    [javax.net.ssl
     SNIHostName SNIServerName
     SSLEngine SSLEngineResult SSLEngineResult$HandshakeStatus SSLEngineResult$Status
     SSLContext SSLSession SSLException TrustManagerFactory KeyManagerFactory
     X509TrustManager TrustManager X509KeyManager X509ExtendedKeyManager]
-   [java.security.cert X509Certificate]
-   [java.security PrivateKey SecureRandom KeyStore MessageDigest]
-   [java.util.concurrent ConcurrentLinkedDeque]
-   [java.util Date Base64]
    [sun.security.provider X509Factory]
    [sun.security.x509 AlgorithmId X509CertInfo X509CertImpl X500Name CertificateValidity]
    [sun.security.tools.keytool CertAndKeyGen]))
@@ -63,6 +64,38 @@
        :cert/fingerprint (fingerprint cert)
        :cert/alias (or alias (str (.getSerialNumber cert)))
        :cert/private-key (.getPrivateKey keytool)})))
+
+#_(
+
+   (self-cert :cert/alias "server")
+   )
+
+(defn serialize [filename cert]
+  (with-open [fos (FileOutputStream. filename)]
+    (let [oos (ObjectOutputStream. fos)]
+      (->> cert
+           (.writeObject oos)))))
+
+(defn deserialize [filename]
+  (with-open [fis (FileInputStream. filename)]
+    (let [ois (ObjectInputStream. fis)]
+      (-> ^PersistentArrayMap (.readObject ois)))))
+
+#_(
+   ;; serialize cert
+   (with-open [fos (FileOutputStream. ".certmap.bin")]
+     (let [oos (ObjectOutputStream. fos)]
+       (->> cert
+            ;;:cert/cert
+            (.writeObject oos))))
+
+   (with-open [fis (FileInputStream. ".certmap.bin")]
+     (let [ois (ObjectInputStream. fis)]
+       (-> ^PersistentArrayMap (.readObject ois))))
+
+   (type {})
+
+   )
 
 #_(
    (in-ns 'jaq.http.xrf.dtls)
@@ -297,6 +330,11 @@
 (defn ^SSLContext context []
   (SSLContext/getInstance "DTLS"))
 
+#_(
+
+   (->> (context) (.getDefaultSSLParameters))
+   (->> (context) (.getSupportedSSLParameters))
+   )
 (defn ^SSLContext trust [ctx certs]
   (let [ks (KeyStore/getInstance default-keystore-type)
         kmf (KeyManagerFactory/getInstance "SunX509")
@@ -449,6 +487,15 @@
          mode true]
      (-> (context) (trust cert) (ssl-engine) (client-mode mode) (configure packet-size)))
 
+   (let [certs [(self-cert :cert/alias "server")]
+         packet-size 1024
+         mode true
+         ctx (-> (context) (trust certs))]
+     (->> ctx (.getDefaultSSLParameters) (.getProtocols) (into []))
+     #_(->> ctx (.getSupportedSSLParameters))
+     )
+   sun.security.ssl.SSLExtension/USE_SRTP
+
    (let [dst (ByteBuffer/allocate 24024)]
      (-> (context) (ssl-engine) (client-mode true) (configure "jaq.alpeware.com")
          ;;(.getSession) #_(.getPacketBufferSize) (.getApplicationBufferSize)
@@ -587,7 +634,10 @@
                                 (.unwrap bb scratch)
                                 (result?))
                             (catch SSLException e
-                              (prn e)
+                              (prn ::discarding e)
+                              #_(-> selection-key (.channel) (.close))
+                              #_(.cancel selection-key)
+                              (-> bb (.position (.limit bb)) (decommit))
                               :buffer-underflow))
                           :buffer-underflow)]
              (condp = result
@@ -643,6 +693,7 @@
                    (recur acc x)))))))))))
 
 #_(
+   *e
    *ns*
    (require 'jaq.http.xrf.dtls :reload)
    (in-ns 'jaq.http.xrf.dtls)

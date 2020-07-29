@@ -547,4 +547,14 @@
                  :source-map true #_"out/app.js.map"
                  }
                 cenv)
+
+   (cljsc/build "src"
+                {:optimizations :advanced #_:simple #_:none
+                 :output-dir "out"
+                 :output-to "out/app.js"
+                 ;;:fingerprint true
+                 :verbose true
+                 :source-map #_true "out/app.js.map"
+                 }
+                cenv)
    )
