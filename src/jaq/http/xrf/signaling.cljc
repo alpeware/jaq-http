@@ -84,7 +84,8 @@
             :sctp-port ["5000"]
             ;; foundation component transport priority address port type
             ;;:candidate [(str "foundation 1 udp 2130706431 " host " " port " typ host")]
-            :candidate [(str "foundation 1 udp 2130706431 " host " " port " typ srflx raddr 192.168.1.140 rport " port)
+            :candidate [(str "foundation 1 udp 2130706431 " host " " port " typ host ")
+                        #_(str "foundation 1 udp 2130706431 " host " " port " typ srflx raddr 192.168.1.140 rport " port)
                         (str "foundation 1 udp 2130706431 192.168.1.140" " " port " typ host")]
             :fingerprint [(str "sha-256 " (string/join ":" fingerprint))]}}
        ;; need to order the keys unfortunately
@@ -771,23 +772,24 @@
    (in-ns 'jaq.http.xrf.signaling)
    )
 
-#?(:cljs
-   (defonce init
-     (into []
-           (comp
-            html/render-rf)
-           [{:event/src (dom/getElement "app")
-             :dom/hiccup [:div
-                          [:style {:type "text/css"}
-                           (css [:div#main {:font-size "16px"}] [:div#response {:background-color "blue"}])]
-                          [:div#main
-                           [:form#form
-                            [:label "Peer Connection"]
-                            [:button#submit {:type "button"} "Connect"]]
-                           [:div#info]
-                           [:div#response]]]}]))
+#_(
+   #?(:cljs
+      (defonce init
+        (into []
+              (comp
+               html/render-rf)
+              [{:event/src (dom/getElement "app")
+                :dom/hiccup [:div
+                             [:style {:type "text/css"}
+                              (css [:div#main {:font-size "16px"}] [:div#response {:background-color "blue"}])]
+                             [:div#main
+                              [:form#form
+                               [:label "Peer Connection"]
+                               [:button#submit {:type "button"} "Connect"]]
+                              [:div#info]
+                              [:div#response]]]}]))
 
-   :clj :noop)
+      :clj :noop))
 
 #?(:cljs
    (defn ^:export x []

@@ -263,6 +263,7 @@
                       (.flip dst)
                       (commit dst)
                       (prn ::write dst selection-key (.channel selection-key))
+                      (prn ::written ::hs (nio/datagram-send! x))
                       #_(.interestOps sk SelectionKey/OP_WRITE)
                       (handshake? engine))))
 
@@ -520,6 +521,7 @@
            (if-not (contains? #{:finished :not-handshaking} hs)
              (do
                (handshake! engine x)
+               #_(prn ::written ::hs (nio/datagram-send! x))
                acc)
              (do
                (when-not @status

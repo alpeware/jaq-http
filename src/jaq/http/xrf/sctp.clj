@@ -264,11 +264,14 @@
                   x))
    :abort (fn [{:sctp/keys [buf chunk-length] :as x}]
             (let [cause (-> buf (.getShort) (bit-and 0xffff))
-                  cause-length (-> buf (.getShort) (bit-and 0xffff))
+                  cause-length (-> buf (.getShort) (bit-and 0xffff) (- 4))
+                  _ (prn ::abort cause-length (.remaining buf))
                   cause-info (->> (range)
                                   (take cause-length)
                                   (map (fn [_] (.get buf)))
                                   (map (fn [e] (bit-and e 0xff)))
+                                  (map char)
+                                  (apply str)
                                   (doall))]
               (assoc x
                      :sctp/error-cause cause
@@ -280,6 +283,22 @@
    (in-ns 'jaq.http.xrf.sctp)
    *e
    *ns*
+
+   (let [data [0x13 0x88 0x13 0x88 0xE0 0xDD 0x63 0x2E 0x56 0xDB 0x47 0xB3 0x06 0x00 0x00 0x40
+               0x0D 0x00 0x00 0x3C 0x44 0x65 0x6C 0x69 0x76 0x65 0x72 0x65 0x64 0x20 0x53 0x53
+               0x4E 0x3D 0x30 0x30 0x30 0x30 0x2C 0x20 0x67 0x6F 0x74 0x20 0x54 0x53 0x4E 0x3D
+               0x33 0x65 0x63 0x34 0x34 0x33 0x66 0x64 0x2C 0x20 0x53 0x49 0x44 0x3D 0x30 0x30
+               0x30 0x30 0x2C 0x20 0x53 0x53 0x4E 0x3D 0x30 0x30 0x30 0x30]
+         buf (->> data (byte-array) (ByteBuffer/wrap))
+         x {:sctp/buf buf}]
+     (->> x
+          (decode-header)
+          ;; 1st chunk
+          (decode-chunk)
+          (decode-params)
+          ;; end 1st chunk
+          #_(decode-opt-params)
+          ))
 
    (range 2 4)
 
@@ -503,6 +522,10 @@
          (f))))
 
 #_(
+
+
+
+   *e
 
    (let [protocol (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/protocol)
          data (->> jaq.http.xrf.ice/y :sctp/chunk :sctp/data)]

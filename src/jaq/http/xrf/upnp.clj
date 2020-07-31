@@ -332,8 +332,8 @@
 
    (->> services
         (filter (fn [{:keys [serviceType]}]
-                    (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"
-                                serviceType)))
+                  (re-matches #"(?i).*:(wanipconnection|wanpppconnection):.*"
+                              serviceType)))
         (map (fn [{:keys [uri SCPDURL] :as service}]
                (try
                  [service
@@ -389,16 +389,18 @@
                                          (string/includes? serviceType "WANIP")))
                       (first))
          service-type (:serviceType service)
-         action #_"GetExternalIPAddress" "AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
-         args #_{} #_{:NewPortMappingIndex "0"} #_{:NewRemoteHost "" :NewProtocol "UDP"
-                                                 :NewExternalPort "60000"} #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
-                                                                             :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
-                                                                             :NewEnabled "1" :NewPortMappingDescription "alpeware"
-                                                                            :NewLeaseDuration "0"}
-         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
-          :NewInternalClient "192.168.1.140" :NewInternalPort "60000"
-          :NewEnabled "1" :NewPortMappingDescription "stun"
-          :NewLeaseDuration "0"}
+         action #_"GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" "GetGenericPortMappingEntry"
+         args #_{} {:NewPortMappingIndex "0"}
+         #_{:NewRemoteHost "" :NewProtocol "UDP"
+            :NewExternalPort "60000"}
+         #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
+            :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
+            :NewEnabled "1" :NewPortMappingDescription "alpeware"
+            :NewLeaseDuration "0"}
+         #_{:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
+            :NewInternalClient "192.168.1.140" :NewInternalPort "60000"
+            :NewEnabled "1" :NewPortMappingDescription "datachannel"
+            :NewLeaseDuration "0"}
          soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
                                                     :SOAP-ENV:encodingStyle "http://schemas.xmlsoap.org/soap/encoding/"}
                     :content [{:tag :SOAP-ENV:Body
@@ -422,30 +424,35 @@
                    nio/read-rf
                    nio/write-rf
                    (nio/send-rf (comp
-                             (map
-                              (fn [{:http/keys [host port] :as x}]
-                                (prn soap)
-                                (assoc x
-                                       :http/headers {:SOAPAction (str service-type "#" action)
-                                                      :content-type "text/xml"}
-                                       :http/body soap)))
-                             http/http-rf))
+                                 (map
+                                  (fn [{:http/keys [host port] :as x}]
+                                    (prn soap)
+                                    (assoc x
+                                           :http/headers {:SOAPAction (str service-type "#" action)
+                                                          :content-type "text/xml"}
+                                           :http/body soap)))
+                                 http/http-rf))
                    #_(rf/debug-rf ::sent)
                    nio/readable-rf
                    (nio/receive-rf (comp
-                                (map (fn [{:keys [byte] :as x}]
-                                       (assoc x :char (char byte))))
-                                header/response-line
-                                header/headers
-                                http/chunked-rf
-                                http/text-rf
-                                nio/body-rf
-                                (map (fn [{:http/keys [body]
-                                           :keys [status reason headers]
-                                           :as x}]
-                                       (prn status reason headers)
-                                       (prn body)
-                                       x))))
+                                    (map (fn [{:keys [byte] :as x}]
+                                           #_(pr (char byte))
+                                           (assoc x :char (char byte))))
+                                    header/response-line
+                                    header/headers
+                                    http/chunked-rf
+                                    #_(rf/debug-rf ::chunked)
+                                    #_(map (fn [x]
+                                             (def y x)
+                                             x))
+                                    http/text-rf
+                                    nio/body-rf
+                                    (map (fn [{:http/keys [body]
+                                               :keys [status reason headers]
+                                               :as x}]
+                                           (prn status reason headers)
+                                           (prn body)
+                                           x))))
                    nio/close-connection))))
                nio/close-rf)))]
      (->> [{:context/bip-size (* 1 4096)
@@ -457,6 +464,9 @@
             :http/minor 1 :http/major 1}]
           (into [] xf)))
    (def x (first *1))
+
+   (in-ns 'jaq.http.xrf.upnp)
+   (-> y :headers)
 
    x
    *e

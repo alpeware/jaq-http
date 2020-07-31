@@ -235,6 +235,10 @@
              :else
              (assoc-fn acc x))))))))
 
+#_(
+   (in-ns 'jaq.http.xrf.http)
+   )
+
 (def body-rf
   (fn [rf]
     (let [once (volatile! false)]

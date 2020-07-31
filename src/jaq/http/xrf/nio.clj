@@ -438,7 +438,7 @@
                  acc)
                (do
                  (loop []
-                   (->> (assoc x :byte (-> bb (.get) (bit-and 0xff)))
+                   (->> (assoc x :byte (-> bb (.get) #_(bit-and 0xff)))
                         (xrf acc))
                    (when (and (.hasRemaining bb) (not (xrf)))
                      (recur)))
