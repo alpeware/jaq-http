@@ -245,9 +245,6 @@
    *e
    )
 
-;; TODO: choose
-
-
 ;; example to recur locally
 (def recur-rf
   (fn [rf]
@@ -305,6 +302,144 @@
          )
 
    )
+
+;; cljs event handling
+;; TODO: adapt for clj
+
+(defn selector! []
+  (volatile! {}))
+
+(defn register! [selector event-target event-type attachment channel]
+  (vswap! selector assoc-in [event-target event-type channel] attachment))
+
+(defn deregister! [selector event-target event-type channel]
+  (vswap! selector update-in [event-target event-type] dissoc channel))
+
+(def selector-rf
+  (fn [rf]
+    (let [sl (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port]
+               :window/keys [selector]
+               :as x}]
+         (when-not @sl
+           (let [selector (or selector (selector!))]
+             (->> selector
+                  (vreset! sl))))
+         (->> (assoc x :window/selector @sl)
+              (rf acc)))))))
+
+#?(:cljs
+   (def select-rf
+     (fn [rf]
+       (let [once (volatile! nil)]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:window/keys [selector]
+                  :event/keys [types]
+                  event-target :event/target
+                  :as x}]
+            (when-not @once
+              (prn ::listeners event-target types)
+              (doseq [e types]
+                (-> event-target
+                    (.addEventListener
+                     (name e)
+                     (fn [event]
+                       (let [event-name (-> event (.-constructor) (.-name) (keyword))
+                             event-type (-> event (.-type) (keyword))
+                             target (-> event (.-target))]
+                         #_(.info js/console "event" event)
+                         #_(prn ::selector selector)
+                         (doseq [{:context/keys [rf acc x]
+                                  :window/keys [channel]} (-> @selector
+                                                              (get-in [event-target event-type])
+                                                              (vals))]
+                           (prn ::event channel)
+                           (rf acc (assoc x
+                                          :context/rf rf
+                                          :context/x x
+                                          :event/event event
+                                          :event/name event-name
+                                          :event/type event-type
+                                          :event/target target
+                                          :window/selector selector
+                                          :window/channel channel))
+                           (when (rf)
+                             (deregister! selector event-target event-type channel))))))))
+              (vreset! once true))
+            (rf acc x)))))))
+
+(defn bind-rf
+  ([] (fn [rf]
+        (let [channel (volatile! nil)]
+          (fn
+            ([] (rf))
+            ([acc] (rf acc))
+            ([acc {:window/keys [selector]
+                   :event/keys [target type types]
+                   :as x}]
+             (when-not @channel
+               (->> (random-uuid)
+                    (vreset! channel))
+               ;; TODO: remove support for type
+               (doseq [t (if type [type] types)]
+                 (register! selector
+                            target
+                            t
+                            (-> x
+                                (dissoc :window/selector)
+                                (assoc :context/x (dissoc x :window/selector)
+                                       :window/channel @channel
+                                       :context/rf rf))
+                            @channel)))
+             acc)))))
+  ([xf] (fn [rf]
+          (let [channel (volatile! nil)]
+            (fn
+              ([] (rf))
+              ([acc] (rf acc))
+              ([acc {:window/keys [selector]
+                     :event/keys [target type types]
+                     :as x}]
+               (when-not @channel
+                 (->> (random-uuid)
+                      (vreset! channel))
+                 ;; TODO: remove support for type
+                 (doseq [t (if type [type] types)]
+                   (register! selector
+                              target
+                              t
+                              (-> x
+                                  (dissoc :window/selector)
+                                  (assoc :context/x (dissoc x :window/selector)
+                                         :window/channel @channel
+                                         :context/rf (xf (result-fn))))
+                              @channel)))
+               (->> (assoc x :window/channel @channel)
+                    (rf acc))))))))
+
+;; cljs promises
+#?(:cljs
+   (defn await-rf [k f]
+     (fn [rf]
+       (let [once (volatile! nil)
+             result (volatile! nil)]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:event/keys [src type]
+                  :as x}]
+            (if-not @once
+              (do
+                (vreset! once true)
+                (-> (f x)
+                    (.then (fn [y]
+                             (rf acc (assoc x k y)))))))
+            acc))))))
 
 
 
