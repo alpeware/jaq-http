@@ -389,15 +389,15 @@
                                          (string/includes? serviceType "WANIP")))
                       (first))
          service-type (:serviceType service)
-         action #_"GetExternalIPAddress" #_"AddPortMapping" #_"GetSpecificPortMappingEntry" "GetGenericPortMappingEntry"
-         args #_{} {:NewPortMappingIndex "0"}
+         action #_"GetExternalIPAddress" "AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
+         args #_{} #_{:NewPortMappingIndex "0"}
          #_{:NewRemoteHost "" :NewProtocol "UDP"
             :NewExternalPort "60000"}
          #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
             :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
             :NewEnabled "1" :NewPortMappingDescription "alpeware"
             :NewLeaseDuration "0"}
-         #_{:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
+         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
             :NewInternalClient "192.168.1.140" :NewInternalPort "60000"
             :NewEnabled "1" :NewPortMappingDescription "datachannel"
             :NewLeaseDuration "0"}

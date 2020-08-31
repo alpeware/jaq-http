@@ -939,8 +939,13 @@
 ;; TODO: move to http
 (def body-rf
   (comp
-   (map (fn [{:http/keys [chunks] :as e}]
-          (assoc e :http/body (first chunks))))
+   (drop-while (fn [{{:keys [content-length transfer-encoding]} :headers
+                     :as x}]
+                 (and
+                  (= transfer-encoding "chunked")
+                  (> content-length 0))))
+   (map (fn [{:http/keys [chunks] :as x}]
+          (assoc x :http/body (->> chunks (string/join)))))
    (map (fn [{:http/keys [body]
               {:keys [content-type]} :headers
               :keys [status]
@@ -956,6 +961,19 @@
                    (clojure.walk/postwalk (fn [x] (if (map? x) (into {} (map f x)) x)))
                    (assoc e :http/json))
               e))))))
+
+#_(
+   (let [{{:keys [content-length transfer-encoding]} :headers
+          :as x} y]
+     (and
+      (= transfer-encoding "chunked")
+      (> content-length 0)))
+
+   (->> y :http/chunks (string/join) (clojure.data.json/read-str))
+   (->> y :headers :content-length)
+   (->> y :headers :transfer-encoding)
+   (->> y :content-length)
+   )
 
 ;; TODO: move to http
 (def response-rf
@@ -1038,6 +1056,11 @@
    http/text-rf
    body-rf))
 
+#_(
+   (in-ns 'jaq.http.xrf.nio)
+   (keys y)
+   )
+
 (def close-connection
   (comp
    (map (fn [{:http/keys [chunks body json]
@@ -1060,11 +1083,12 @@
               (channel-rf
                (comp
                 ssl-connection
-                (rf/debug-rf ::attachment)
+                #_(rf/debug-rf ::attachment)
                 ;; send ssl rf
                 (ssl/request-ssl-rf
                  http/http-rf)
                 ;; wait for response
+                (rf/once-rf (fn [x] (prn ::waiting ::auth) x))
                 (ssl/receive-ssl-rf
                  json-response)
                 ;; process response
@@ -1091,7 +1115,7 @@
                 close-connection))
               rf/identity-rf)
    (drop-while (fn [{:oauth2/keys [expires-in]}]
-                 (> (System/currentTimeMillis) expires-in)))
+                 (>= (System/currentTimeMillis) expires-in)))
    #_(rf/debug-rf ::authed)))
 
 #_(

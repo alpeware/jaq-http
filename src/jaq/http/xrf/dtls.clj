@@ -433,7 +433,9 @@
   (.createSSLEngine context))
 
 (defn ^SSLEngine client-mode [^SSLEngine engine client-mode]
-  (doto engine (.setUseClientMode client-mode)))
+  (doto engine
+    (.setUseClientMode client-mode)
+    (.setWantClientAuth true)))
 
 ;; aka encode: plain src -> encoded dst
 (defn wrap! [^SSLEngine engine ^ByteBuffer src ^ByteBuffer dst]

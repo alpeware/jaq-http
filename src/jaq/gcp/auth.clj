@@ -52,13 +52,19 @@
 (def auth-url
   (comp
    (map (fn [x] (assoc x :http/req [])))
-   (map (fn [x]
+   (map (fn [{:auth/keys [scopes client-id]
+              :or {scopes cloud-scopes
+                   client-id google-client-id}
+              :as x}]
           (assoc x
                  :http/method :GET
                  :http/scheme :https
                  :http/host oauth2-host
                  :http/path auth-path
-                 :http/params (-> google-oauth2 (select-keys [:client-id :redirect-uri]) (merge auth-params)))))
+                 :http/params (-> google-oauth2
+                                  (select-keys [:redirect-uri])
+                                  (merge {:client-id client-id})
+                                  (merge (-> auth-params (assoc :scope (string/join " " scopes))))))))
    (map (fn [{:http/keys [req scheme host path] :as x}]
           (update x :http/req conj (str (name scheme) "://" host path))))
    http/params-rf
@@ -185,20 +191,20 @@
    (exchange-token (merge google-oauth2 {:code "4/1wFRLh4XeTTye4sE9K-RPs6hHx6VlhTGEQmm5MO0aCxkYhBESh8uQIA"}))
 
    (let [xf (comp
-             nio/selector-rf
-             (nio/thread-rf
+             jaq.http.xrf.nio/selector-rf
+             (jaq.http.xrf.nio/thread-rf
               (comp
-               (nio/select-rf
+               (jaq.http.xrf.nio/select-rf
                 (comp
-                 (nio/channel-rf
+                 (jaq.http.xrf.nio/channel-rf
                   (comp
-                   nio/ssl-connection
+                   jaq.http.xrf.nio/ssl-connection
                    (ssl/request-ssl-rf http/http-rf)
-                   (ssl/receive-ssl-rf nio/json-response)
+                   (ssl/receive-ssl-rf jaq.http.xrf.nio/json-response)
                    (map (fn [{:http/keys [json chunks]
                               :as x}]
                           (assoc x :oauth2/credentials json)))
-                   nio/close-connection))
+                   jaq.http.xrf.nio/close-connection))
                  (drop-while (fn [{:oauth2/keys [credentials] :as x}]
                                (nil? credentials)))
                  (map (fn [{{:keys [expires-in]} :http/json
@@ -248,10 +254,11 @@
     (fn
       ([] (rf))
       ([acc] (rf acc))
-      ([acc {:oauth2/keys [client-id client-secret refresh-token]
+      ([acc {:oauth2/keys [client-id client-secret refresh-token file]
+             :or {file credentials}
              :as x}]
        (if-not refresh-token
-         (->> credentials
+         (->> file
               (slurp)
               (edn/read-string)
               (merge x)
@@ -263,14 +270,15 @@
     (fn
       ([] (rf))
       ([acc] (rf acc))
-      ([acc {:oauth2/keys [expires-in]
+      ([acc {:oauth2/keys [expires-in file]
+             :or {file credentials}
              :as x}]
        (when (> expires-in (System/currentTimeMillis))
          (->> x
               (filter (fn [[k v]] (= "oauth2" (namespace k))))
               (into {})
               (prn-str)
-              (spit credentials)))
+              (spit file)))
        (rf acc x)))))
 
 #_(

@@ -192,13 +192,15 @@
 ;; TODO: static file handlers
 (def handlers
   [{:urlRegex "/.*"
+    :securityLevel "SECURE_ALWAYS"
     :script {:scriptPath "auto"}}])
 
 (def entrypoint
   {:shell (->> ["java"
                 #_"-agentpath:/opt/cprof/profiler_java_agent.so=-logtostderr,-cprof_heap_sampling_interval=262144"
-                "-cp classes:clojure-1.10.1.jar:spec.alpha-0.2.176.jar:core.specs.alpha-0.2.44.jar:asm-all-4.2.jar:yuicompressor-2.4.8.jar"
-                "jaq.http.server"]
+                "-cp classes:clojure-1.10.1.jar:spec.alpha-0.2.176.jar:core.specs.alpha-0.2.44.jar:asm-all-4.2.jar"
+                #_"jaq.http.server"
+                "fpp.server"]
                (string/join " "))})
 
 (def env

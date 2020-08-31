@@ -119,31 +119,72 @@
                                                       (fress/read-object))))))})))
 
 (defn transact-rf [xf]
-  (comp
-   (rf/one-rf :db/transaction
-              (comp
-               (map (fn [{:db/keys [db store mode] :as x}]
-                      (assoc x :db/transaction (-> db (.transaction [store] (name mode))))))
-               (map (fn [{:db/keys [transaction] :as x}]
-                      (assoc x
-                             :event/target transaction
-                             :event/types [:error :complete :abort])))
-               rf/select-rf
-               #_(bind-rf (map (fn [{:event/keys [target type] :as x}]
-                                 (prn ::tx ::type type)
-                                 (.info js/console target)
-                                 x)))
-               (map :db/transaction)))
-   #_(map (fn [{:db/keys [transaction store] :as x}]
-            (prn ::tx transaction (-> transaction
-                                      (.objectStore store)))
-            (.info js/console transaction)
-            (assoc x :db/object-store (-> transaction
-                                          (.objectStore store)))))
-   xf
-   (map (fn [{:db/keys [transaction] :as x}]
-          (prn ::tx transaction)
-          (-> x
-              (assoc :event/target transaction
-                     :event/types [:error :complete :abort]))))
-   (rf/bind-rf)))
+  (fn [rf]
+    (let [xrf (xf (rf/result-fn))
+          yrf ((comp
+                (rf/one-rf :db/transaction
+                           (comp
+                            (map (fn [{:db/keys [db store mode] :as x}]
+                                   (prn ::db db)
+                                   (assoc x :db/transaction (-> db (.transaction [store] (name mode))))))
+                            (map (fn [{:db/keys [transaction] :as x}]
+                                   (assoc x
+                                          :event/target transaction
+                                          :event/types [:error :complete :abort])))
+                            rf/select-rf
+                            (map :db/transaction)))
+                (map (fn [{:db/keys [transaction] :as x}]
+                       (prn ::tx transaction)
+                       (-> x
+                           (dissoc :event/type)
+                           (assoc :event/target transaction
+                                  :event/types [:error :complete :abort]))))
+                (rf/bind-rf (fn [zrf]
+                              (fn
+                                ([] (zrf))
+                                ([acc] (zrf acc))
+                                ([acc y]
+                                 (rf acc (xrf)))))))
+               (rf/result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:db/keys [db store mode] :as x}]
+         (yrf acc x)
+         (xrf acc (yrf))
+         acc)))))
+
+
+#_(
+
+   (->> (yrf) :event/type)
+   (->> y :window/selector (deref) (keys))
+   (into []
+         (comp
+          rf/selector-rf
+          open-db-rf
+          (transact-rf (comp
+                        (map (fn [{:rtc/keys [certificate] :as x}]
+                               (def y x)
+                               (assoc x
+                                      :db/key :device/uuid)))
+                        get-rf))
+          (map (fn [{:db/keys [key value]
+                     :crypto/keys [jwt]
+                     :as x}]
+                 (def y x)
+                 (prn ::jwt jwt)
+                 (prn ::get key value)
+                 x))
+          close-db-rf
+          (drop-while (constantly true)))
+         [{:db/name :fpp/db
+           :db/version 1
+           :db/store :fpp/cache
+           :db/mode :readwrite
+           :db/options {}}])
+
+   (-> y (keys))
+   (yrf)
+
+   )

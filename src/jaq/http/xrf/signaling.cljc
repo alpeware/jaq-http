@@ -19,7 +19,7 @@
                [clojure.string :as string]
                [clojure.walk :as walk]
                [goog.dom :as dom]
-               [garden.core :refer [css]]
+               #_[garden.core :refer [css]]
                [jaq.http.xrf.html :as html])
      :clj
      (:require [clojure.pprint :refer [pprint]]
@@ -29,7 +29,7 @@
                [jaq.http.xrf.http :as http]
                [jaq.http.xrf.ice :as ice]
                [jaq.http.xrf.nio :as nio]
-               [jaq.http.xrf.repl :refer [send-response-rf]]
+               #_[jaq.http.xrf.repl :refer [send-response-rf]]
                [jaq.http.xrf.rf :as rf]
                [jaq.http.xrf.ssl :as ssl]
                [jaq.http.xrf.stun :as stun]
@@ -803,7 +803,7 @@
               :rtc/conf {:iceServers [{:urls "stun:stun.l.google.com:19302"}]}
               :dom/hiccup [:div
                            [:style {:type "text/css"}
-                            (css [:div#main {:font-size "16px"}] [:div#response {:background-color "grey"}])]
+                            #_(css [:div#main {:font-size "16px"}] [:div#response {:background-color "grey"}])]
                            [:div#main
                             [:form#form
                              [:label "Peer Connection"]

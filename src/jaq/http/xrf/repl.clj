@@ -3,7 +3,7 @@
    [clojure.string :as string]
    [clojure.set :as set]
    [clojure.data.json :as j]
-   [garden.core :refer [css]]
+   #_[garden.core :refer [css]]
    [hiccup.core :refer [html]]
    [hiccup.page :as page]
    [jaq.gcp.storage :as storage]
@@ -436,7 +436,7 @@
     [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
     [:title "Alpeware"]
     [:style {:type "text/css"}
-     (css [:body {:font-size "16px"}]
+     #_(css [:body {:font-size "16px"}]
           [:h1 {:font-size "24px"}])]
     #_prod
     dev]))

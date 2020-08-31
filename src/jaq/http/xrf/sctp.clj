@@ -518,6 +518,7 @@
 (defn decode-message [{:sctp/keys [data protocol] :as x}]
   (let [buf (->> data (byte-array) (ByteBuffer/wrap))
         f (get decode-protocol-map protocol)]
+    (prn ::protocol protocol)
     (->> (assoc x :sctp/buf buf)
          (f))))
 

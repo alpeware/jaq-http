@@ -343,7 +343,7 @@
                   event-target :event/target
                   :as x}]
             (when-not @once
-              (prn ::listeners event-target types)
+              (prn ::listeners #_event-target types)
               (doseq [e types]
                 (-> event-target
                     (.addEventListener
@@ -353,12 +353,16 @@
                              event-type (-> event (.-type) (keyword))
                              target (-> event (.-target))]
                          #_(.info js/console "event" event)
-                         #_(prn ::selector selector)
+                         #_(prn ::event event-name event-type )
+                         (when-not (-> @selector
+                                       (get-in [event-target event-type])
+                                       (vals))
+                           (prn ::event ::no ::listeners event-name event-type target))
                          (doseq [{:context/keys [rf acc x]
                                   :window/keys [channel]} (-> @selector
                                                               (get-in [event-target event-type])
                                                               (vals))]
-                           (prn ::event channel)
+                           (prn ::event channel event-name event-type target)
                            (rf acc (assoc x
                                           :context/rf rf
                                           :context/x x
@@ -369,58 +373,74 @@
                                           :window/selector selector
                                           :window/channel channel))
                            (when (rf)
+                             (prn ::event ::deregister channel)
                              (deregister! selector event-target event-type channel))))))))
               (vreset! once true))
             (rf acc x)))))))
 
-(defn bind-rf
-  ([] (fn [rf]
-        (let [channel (volatile! nil)]
-          (fn
-            ([] (rf))
-            ([acc] (rf acc))
-            ([acc {:window/keys [selector]
-                   :event/keys [target type types]
-                   :as x}]
-             (when-not @channel
-               (->> (random-uuid)
-                    (vreset! channel))
-               ;; TODO: remove support for type
-               (doseq [t (if type [type] types)]
-                 (register! selector
-                            target
-                            t
-                            (-> x
-                                (dissoc :window/selector)
-                                (assoc :context/x (dissoc x :window/selector)
-                                       :window/channel @channel
-                                       :context/rf rf))
-                            @channel)))
-             acc)))))
-  ([xf] (fn [rf]
-          (let [channel (volatile! nil)]
-            (fn
-              ([] (rf))
-              ([acc] (rf acc))
-              ([acc {:window/keys [selector]
-                     :event/keys [target type types]
-                     :as x}]
-               (when-not @channel
-                 (->> (random-uuid)
-                      (vreset! channel))
-                 ;; TODO: remove support for type
-                 (doseq [t (if type [type] types)]
-                   (register! selector
-                              target
-                              t
-                              (-> x
-                                  (dissoc :window/selector)
-                                  (assoc :context/x (dissoc x :window/selector)
-                                         :window/channel @channel
-                                         :context/rf (xf (result-fn))))
-                              @channel)))
-               (->> (assoc x :window/channel @channel)
-                    (rf acc))))))))
+#?(:cljs
+   (defn bind-rf
+     ([] (fn [rf]
+           (let [channel (volatile! nil)]
+             (fn
+               ([] (rf))
+               ([acc] (rf acc))
+               ([acc {:window/keys [selector]
+                      :event/keys [target type types]
+                      :as x}]
+                (when-not @channel
+                  (->> (random-uuid)
+                       (vreset! channel))
+                  ;; TODO: remove support for type
+                  (doseq [t types #_(if type [type] types)]
+                    (register! selector
+                               target
+                               t
+                               (-> x
+                                   (dissoc :window/selector)
+                                   (assoc :context/x (dissoc x :window/selector)
+                                          :window/channel @channel
+                                          :context/rf rf))
+                               @channel)))
+                acc)))))
+     ([xf] (fn [rf]
+             (let [channel (volatile! nil)]
+               (fn
+                 ([] (rf))
+                 ([acc] (rf acc))
+                 ([acc {:window/keys [selector]
+                        :event/keys [target type types]
+                        :as x}]
+                  (when-not @channel
+                    (->> (random-uuid)
+                         (vreset! channel))
+                    ;; TODO: remove support for type
+                    (doseq [t types #_(if type [type] types)]
+                      (prn ::register t @channel)
+                      (register! selector
+                                 target
+                                 t
+                                 (-> x
+                                     (dissoc :window/selector)
+                                     (assoc :context/x (dissoc x :window/selector)
+                                            :window/channel @channel
+                                            :context/rf (xf (result-fn))))
+                                 #_{
+                                    :context/x (dissoc x :window/selector :window/channel
+                                                       #_:event/target)
+                                    :window/channel @channel
+                                    :context/rf (xf (result-fn))}
+                                 @channel)))
+                  (prn ::done ::bind)
+                  (->> (assoc x :window/channel @channel)
+                       (rf acc)))))))))
+
+#_(
+   (clojure.set/difference
+    #{:event/event :db/request :crypto/algorithm :db/default :event/target :rtc/peer :db/store :http/path :rtc/channel :event/types :db/db :db/mode :db/name :db/value :db/key :event/src :rtc/channel-name :rtc/certificate :device/uuid :db/transaction :crypto/extractable :context/x :listener/key :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :async/promise :window/channel :db/version}
+    #{:event/event :db/request :crypto/algorithm :db/default :event/target :db/store :http/path :event/types :db/db :db/mode :db/name :db/value :db/key :rtc/channel-name :rtc/certificate :db/transaction :crypto/extractable :context/x :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :window/channel :db/version})
+
+   )
 
 ;; cljs promises
 #?(:cljs
@@ -441,6 +461,87 @@
                              (rf acc (assoc x k y)))))))
             acc))))))
 
+
+;; persist rfs
+
+#_(
+
+   ;; idea: overload with 3rd arg
+
+   *e
+   (let [acc []
+         result (volatile! nil)
+         pf (fn [rf]
+              (fn
+                ([] (rf))
+                ([acc] acc)
+                ([acc m] (rf acc m))
+                ([acc m {:persist/keys [cmd file] :as p}]
+                 (prn ::p p)
+                 (cond
+                   (= cmd :persist/load)
+                   (->> (slurp file)
+                        (clojure.edn/read-string)
+                        (merge p)
+                        (rf acc m))
+                   :else
+                   (rf acc m p)))))
+         rf (fn
+              ([] @result)
+              ([acc] acc)
+              ([acc m] (vswap! result conj m) acc)
+              ([acc m {:persist/keys [cmd file pfn] :as p}]
+               (cond
+                 (= cmd :persist/save)
+                 (pfn p)
+                 :else
+                 p)))
+         xf (comp
+             pf
+             (fn [rf]
+               (let [i (volatile! -1)]
+                 (fn
+                   ([] (rf))
+                   ([acc] (rf acc))
+                   ([acc m]
+                    (->> (vswap! i inc)
+                         (assoc m :context/index)
+                         (rf acc)))
+                   ([acc m {:persist/keys [cmd]
+                            persisted-i :index/i
+                            :as p}]
+                    (prn ::xf p)
+                    (cond
+                      (= cmd :persist/save)
+                      (->> (assoc p :index/i @i)
+                           (rf acc m))
+                      (= cmd :persist/load)
+                      (do
+                        (prn ::loading persisted-i)
+                        (vreset! i persisted-i)
+                        (rf acc m p))))))))
+         p {:persist/cmd :persist/save
+            :persist/file "rf.edn"
+            :persist/pfn (fn [{:persist/keys [file] :as p}] (->> (dissoc p :persist/pfn :persist/cmd)
+                                                                 (pr-str) (spit file)))}
+         xrf (xf rf)]
+     (doseq [m (->> (range 10) (map (fn [e] {:context/n e})))]
+       (xrf acc m))
+     ;; persist rf
+     (xrf nil nil p)
+     ;; recover
+     (let [yrf (xf rf)]
+       (->> (assoc p :persist/cmd :persist/load)
+            (yrf nil nil))
+       (doseq [m (->> (range 10) (map (fn [e] {:context/n e})))]
+         (yrf acc m))
+       (yrf))
+     #_(xrf))
+
+   *e
+
+
+   )
 
 
 #_(

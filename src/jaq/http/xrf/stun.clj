@@ -165,7 +165,7 @@
                                                      (-> x (bit-and 0x00ff))]))
                                           (map unchecked-byte))
                                      )]
-                           (prn ::port port ::ip ip)
+                           #_(prn ::port port ::ip ip)
                            (-> buf
                                (.putShort attr-type)
                                (.putShort attr-length)
@@ -189,7 +189,7 @@
                (let [attr-type (get attributes attr)
                      attr-length (count username)
                      padding (-> attr-length (mod -4) -)]
-                 (prn ::username username)
+                 #_(prn ::username username)
                  (-> buf
                      (.putShort attr-type)
                      (.putShort attr-length)
@@ -232,7 +232,7 @@
                               length (-> pos (+ 2) (+ 2) (+ attr-length) (- 20))
                               secret-key (SecretKeySpec. (.getBytes password) hash-algo)
                               mac (Mac/getInstance hash-algo)]
-                          (prn ::password password)
+                          #_(prn ::password password)
                           ;; update length field before calculation
                           (-> buf
                               (.reset)
@@ -254,7 +254,7 @@
                         crc32 (CRC32.)
                         ;; see https://tools.ietf.org/html/rfc5389#section-15.5
                         xor-bytes [0x53 0x54 0x55 0x4e]]
-                    (prn ::length length)
+                    #_(prn ::length length)
                     ;; update length field before calculation
                     (-> buf
                         (.reset)
@@ -280,7 +280,7 @@
                         (take 4)
                         (reverse)
                         (map (fn [e] (bit-and e 0xff)))
-                        ((fn [e] (prn ::crc e (count e)) e))
+                        #_((fn [e] (prn ::crc e (count e)) e))
                         (byte-array)
                         (.put buf))
                     #_(doseq [[x y] (-> crc32
@@ -509,7 +509,7 @@
 
 (defn encode [{:stun/keys [buf message id attributes] :as x}]
   ;; header
-  (prn ::header (get messages message))
+  #_(prn ::header (get messages message))
   (-> buf
       ;; message type
       (.putShort (get messages message))
@@ -522,13 +522,13 @@
       ;; transaction id
       (.put (byte-array id)))
   (doseq [attr attributes]
-    (prn ::encoding attr)
+    #_(prn ::encoding attr)
     (-> (get encode-map attr) (apply [(assoc x :stun/attr attr)])))
   ;; update header length
   (let [end (.position buf)
         ;; should be a multiple of 4
         length (- end 20)]
-    (prn ::length length)
+    #_(prn ::length length)
     (-> buf
         (.reset)
         (.putShort length)
@@ -590,7 +590,7 @@
         length (.getShort buf)
         cookie (.getInt buf)
         id (->> (range id-len) (mapv (fn [_] (bit-and 0xff (.get buf)))))]
-    (prn ::stun ::decode (get message-map msg) msg)
+    #_(prn ::stun ::decode (get message-map msg) msg)
     {:message (get message-map msg)
      :length length
      :cookie cookie
@@ -620,15 +620,13 @@
   {:xor-mapped-address (fn [{:stun/keys [id buf] :as x}]
                          (let [family (.getShort buf)
                                xport [(.get buf) (.get buf)]
-                               ;; TODO: IPv6
-                               _ (prn ::family family ::xport xport ::remaining (.remaining buf))
                                xip (if (= :ipv4 (get family-map family))
                                      [(.get buf) (.get buf) (.get buf) (.get buf)]
                                      [(.get buf) (.get buf) (.get buf) (.get buf)
                                       (.get buf) (.get buf) (.get buf) (.get buf)
                                       (.get buf) (.get buf) (.get buf) (.get buf)
                                       (.get buf) (.get buf) (.get buf) (.get buf)])]
-                           (prn ::xip xip)
+                           #_(prn ::xip xip)
                            (assoc x
                                   :stun/family (get family-map family)
                                   :stun/port (->> (interleave xport (->> magic-bytes (take 2) #_(drop 2)))
@@ -742,7 +740,7 @@
                                     (doall))
                         padding (-> attr-length (mod -4) -)]
                     (->> (range) (take padding) (map (fn [_] (.get buf))) (doall))
-                    (prn ::fingerprint crc-32)
+                    #_(prn ::fingerprint crc-32)
                     (assoc x :stun/crc-32 crc-32)))})
 
 #_(
@@ -759,7 +757,7 @@
                         (prn "Skipping unknown attribute" attr-type attr-length attr-kw buf)
                         (-> buf (.position (+ (.position buf) attr-length padding)))
                         x)))]
-    (prn ::processing type attr-kw length)
+    #_(prn ::processing type attr-kw length)
     (->> (assoc x
                 :stun/attr-type type
                 :stun/attr-length length)
@@ -1031,8 +1029,7 @@
                     (recur (decode-attributes x'))))
                 x))))
      (map (fn [{:stun/keys [port ip message length cookie id] :as x}]
-            (def y x)
-            (prn ::stun port ip message length cookie id)
+            #_(prn ::stun port ip message length cookie id)
             x))))))
 
 (def discover-rf
