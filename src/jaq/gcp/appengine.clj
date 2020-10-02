@@ -191,9 +191,16 @@
 
 ;; TODO: static file handlers
 (def handlers
-  [{:urlRegex "/.*"
+  [{:urlRegex "/out/(.*)"
+    :securityLevel "SECURE_ALWAYS"
+    :staticFiles {:path "/out/\\1"
+                  :uploadPathRegex "out/.*"
+                  :requireMatchingFile true
+                  :applicationReadable true}}
+   {:urlRegex "/.*"
     :securityLevel "SECURE_ALWAYS"
     :script {:scriptPath "auto"}}])
+
 
 (def entrypoint
   {:shell (->> ["java"

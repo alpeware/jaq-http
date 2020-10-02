@@ -109,6 +109,46 @@
                           (map inc))) (range 10))
    )
 
+(defn doseq-rf [k xf]
+  (fn [rf]
+    (let [once (volatile! nil)
+          coll (volatile! nil)
+          val (volatile! nil)
+          vacc (volatile! nil)
+          xrf (xf (result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (if-not @once
+           (do
+             (when-not @coll
+               (->> (k x)
+                    (vreset! coll)))
+             (->> @coll (assoc x k) (xrf acc))
+             (when-let [x' (xrf)]
+               (vswap! coll rest))
+             (if (empty? @coll)
+               (do
+                 (vreset! once true)
+                 (->> (assoc x k @coll)
+                      (rf acc)))
+               (recur acc x)))
+           (->> (assoc x k @coll)
+                (rf acc))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.rf)
+   (into []
+         (comp
+          identity-rf
+          (doseq-rf :coll
+                    (comp
+                     identity-rf
+                     (map (fn [{:keys [coll] :as x}] (prn (first coll)) x)))))
+         [{:coll (range 10)}])
+   )
+
 (defn one-rf [k xf]
   (fn [rf]
     (let [once (volatile! false)
@@ -359,10 +399,11 @@
                                        (vals))
                            (prn ::event ::no ::listeners event-name event-type target))
                          (doseq [{:context/keys [rf acc x]
+                                  {event-once :event/once} :context/x
                                   :window/keys [channel]} (-> @selector
                                                               (get-in [event-target event-type])
                                                               (vals))]
-                           (prn ::event channel event-name event-type target)
+                           (prn ::event channel event-name event-type event-once target)
                            (rf acc (assoc x
                                           :context/rf rf
                                           :context/x x
@@ -372,7 +413,7 @@
                                           :event/target target
                                           :window/selector selector
                                           :window/channel channel))
-                           (when (rf)
+                           (when (or (rf) event-once)
                              (prn ::event ::deregister channel)
                              (deregister! selector event-target event-type channel))))))))
               (vreset! once true))
@@ -438,9 +479,7 @@
 #_(
    (clojure.set/difference
     #{:event/event :db/request :crypto/algorithm :db/default :event/target :rtc/peer :db/store :http/path :rtc/channel :event/types :db/db :db/mode :db/name :db/value :db/key :event/src :rtc/channel-name :rtc/certificate :device/uuid :db/transaction :crypto/extractable :context/x :listener/key :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :async/promise :window/channel :db/version}
-    #{:event/event :db/request :crypto/algorithm :db/default :event/target :db/store :http/path :event/types :db/db :db/mode :db/name :db/value :db/key :rtc/channel-name :rtc/certificate :db/transaction :crypto/extractable :context/x :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :window/channel :db/version})
-
-   )
+    #{:event/event :db/request :crypto/algorithm :db/default :event/target :db/store :http/path :event/types :db/db :db/mode :db/name :db/value :db/key :rtc/channel-name :rtc/certificate :db/transaction :crypto/extractable :context/x :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :window/channel :db/version}))
 
 ;; cljs promises
 #?(:cljs
@@ -458,9 +497,48 @@
                 (vreset! once true)
                 (-> (f x)
                     (.then (fn [y]
-                             (rf acc (assoc x k y)))))))
+                             (rf acc (assoc x k y))))
+                    (.catch (fn [y]
+                              (rf acc (assoc x :error/error y)))))))
             acc))))))
 
+#?(:cljs
+   (defn async-rf [xf]
+     (fn [rf]
+       (let [promise (volatile! nil)
+             xrf (xf (result-fn))]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:event/keys [src type]
+                  :as x}]
+            (when-not @promise
+              (->> (xrf acc (assoc x
+                                   :context/rf xrf
+                                   :context/x x))
+                   (vreset! promise)))
+            (->> (assoc x :async/promise xrf)
+                 (rf acc))))))))
+
+#?(:cljs
+   (defn defer-rf [xf]
+     (fn [rf]
+       (let [deferred (volatile! nil)
+             xrf (xf (result-fn))]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:event/keys [src type timeout]
+                  :as x}]
+            (when-not @deferred
+              (->> (fn []
+                     (xrf acc (assoc x
+                                     :context/rf xrf
+                                     :context/x x)))
+                   (vreset! deferred))
+              (.setTimeout js/window @deferred timeout))
+            (->> (assoc x :async/deferred @deferred)
+                 (rf acc))))))))
 
 ;; persist rfs
 

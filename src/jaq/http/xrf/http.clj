@@ -253,7 +253,7 @@
                      (->> e
                           (map (fn [c] (rf acc {:char c}))))))
               (doall))
-         (rf acc))))))
+         acc)))))
 
 #_(
    (in-ns 'jaq.http.xrf.http)

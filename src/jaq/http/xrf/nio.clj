@@ -187,10 +187,12 @@
 
         socket-address ;; read some bytes
         (do
-          (prn ::received ::from socket-address)
+          #_(prn ::received ::from socket-address)
           (->> bb
                (.flip)
-               (commit))))
+               (commit))
+          (prn ::received ::from socket-address ::bb bb)
+          ))
       socket-address)))
 
 (defn send-datagram-channel [^DatagramChannel channel ^SocketAddress target ^ByteBuffer bytes]

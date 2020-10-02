@@ -278,6 +278,7 @@
                                    (catch SSLException e
                                      (prn ::unwrap e)
                                      :buffer-underflow))]
+                      (prn ::unwrap ::result result)
                       (condp = result
                         :buffer-overflow
                         (throw (SSLException. "buffer-overflow"))
@@ -293,8 +294,7 @@
                           (handshake? engine))))
                     :waiting-for-input))
 
-                ;; read data to network
-                ;; TODO: can we remove this case?
+                ;; ssl engine re-ordered packets
                 :need-unwrap-again
                 (let [result (try
                                (-> engine

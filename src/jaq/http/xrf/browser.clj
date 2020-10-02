@@ -545,16 +545,22 @@
                  ;;:fingerprint true
                  :verbose true
                  :source-map true #_"out/app.js.map"
+                 :infer-externs true
                  }
                 cenv)
 
    (cljsc/build "src"
                 {:optimizations :advanced #_:simple #_:none
-                 :output-dir "out"
-                 :output-to "out/app.js"
-                 ;;:fingerprint true
+                 :output-dir "tmp"
+                 :output-to "tmp/app.js"
+                 :fingerprint true
                  :verbose true
-                 :source-map #_true "out/app.js.map"
+                 :source-map #_true "tmp/app.js.map"
+                 :closure-defines {"goog.DEBUG" false}
+                 ;;:infer-externs true
                  }
                 cenv)
+   *ns*
+   *e
+
    )
