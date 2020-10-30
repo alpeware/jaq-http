@@ -16,6 +16,10 @@
       [java.security KeyFactory PublicKey Signature SecureRandom MessageDigest]
       [java.util UUID Base64])))
 
+#_(
+   (require 'jaq.http.xrf.crypto :reload)
+   (in-ns 'jaq.http.xrf.crypto)
+   )
 ;; cljs
 ;; certificate
 #?(:cljs
@@ -140,8 +144,22 @@
 #?(:clj
    (def public-key-rf
      (comp
-      (map (fn [{{:crypto/keys [data jwk signature]} :datachannel/payload
+      (map (fn [{:crypto/keys [data jwk signature]
                  :as x}]
+             #_(def y x)
+             #_(
+                (->> y :crypto/jwk)
+                (let [{:crypto/keys [data jwk signature]
+                       :as x} y
+                      {:keys [alg kty n e]} jwk
+                      decoder (-> (Base64/getUrlDecoder))
+                      kf (KeyFactory/getInstance kty)
+                      modulus (->> n (.decode decoder) (BigInteger. 1))
+                      exponent (->> e (.decode decoder) (BigInteger. 1))
+                      public-key (->> (RSAPublicKeySpec. modulus exponent)
+                                      (.generatePublic kf))]
+                  (assoc x :crypto/public-key public-key))
+                )
              (let [{:keys [alg kty n e]} jwk
                    decoder (-> (Base64/getUrlDecoder))
                    kf (KeyFactory/getInstance kty)
@@ -149,18 +167,49 @@
                    exponent (->> e (.decode decoder) (BigInteger. 1))
                    public-key (->> (RSAPublicKeySpec. modulus exponent)
                                    (.generatePublic kf))]
-               (assoc x :peer/public-key public-key)))))))
+               (assoc x :crypto/public-key public-key)))))))
 
 #?(:clj
    (def verify-rf
      (comp
-      (map (fn [{{:crypto/keys [data jwk signature]} :datachannel/payload
-                 :peer/keys [public-key]
+      (map (fn [{:crypto/keys [data jwk signature public-key]
                  :as x}]
              (let [sig (Signature/getInstance "SHA256withRSA")]
                (.initVerify sig public-key)
                (.update sig data)
                (assoc x :crypto/verified (.verify sig signature))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.crypto)
+   (let [{:crypto/keys [data jwk signature public-key]
+          :as x} fpp.xfrs.session/y
+         x (assoc fpp.xfrs.session/y
+                :crypto/public-key public-key
+                :crypto/data data
+                :crypto/jwk jwk
+                :crypto/signature signature)]
+     (let [sig (Signature/getInstance "SHA256withRSA")]
+       public-key
+       #_(.initVerify sig public-key)
+       #_(.update sig data)
+       #_(assoc x :crypto/verified (.verify sig signature)))
+     )
+
+   (->> fpp.xfrs.session/y :session/public-key)
+
+   (into [] (comp
+             (map (fn [{{:session/keys [data signature public-key]
+                         :device/keys [jwk]} :datachannel/payload
+                        :session/keys [public-key]
+                        :as x}]
+                    (assoc x
+                           :crypto/public-key public-key
+                           :crypto/data data
+                           :crypto/jwk jwk
+                           :crypto/signature signature)))
+             verify-rf) [fpp.xfrs.session/y])
+   *e
+   )
 
 #?(:clj
    (def ^SecureRandom secure-random (SecureRandom.)))
@@ -222,7 +271,9 @@
    (in-ns 'jaq.http.xrf.crypto)
 
    (let [md (MessageDigest/getInstance "SHA-256")
-         s "foo@bar.com"]
+         ;;s "foo@bar.com"
+         s "sXsqJFPooh4mARf2EPulHsWrejYz65po50khKjydHw5-e7XcjyAHryHWcXRWIi-ktIjri_VUXFRpgJnOvMHDrI1PuVh-qBPYaSvqU8co2nKid48v82u411lmLKlSMn5oRV7rS4B9kH2z2oxe8Tit8md3gxMLf6s2CKEMkqwYHdeO8BSEF5qUUx_MCPP7AgJonRucxYgVQh0E7kYzR3WXLrhat6LidoJzU74ZbUMHg9YXl1FnojMURHaRl4fear8H_ftJUsSpWOQTK9hyNDv7bmduWa-CdyD5AhDqYhYvyD-ucJfC36liaxkhgT4ZizIxLSDmFy2fN25_gksrPlgJbQ"
+         ]
      (->> s
           (.getBytes)
           (.update md))

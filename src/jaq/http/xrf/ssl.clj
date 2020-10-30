@@ -98,6 +98,7 @@
                                    (-> engine
                                        (.unwrap bb empty-buffer)
                                        (result?))
+                                   ;; TODO: handle SSL errors
                                    (catch SSLException e
                                      (prn ::unwrap e)
                                      :buffer-underflow))]

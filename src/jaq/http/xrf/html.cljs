@@ -13,6 +13,176 @@
 (def ^{:doc "Regular expression that parses a CSS-style id and class from a tag name." :private true}
   re-tag #"([^\s\.#]+)(?:#([^\s\.#]+))?(?:\.([^\s#]+))?")
 
+;; query selector
+(defn query [v]
+  (->> v
+       (map name)
+       (string/join " ")
+       (.querySelector (dom/getDocument))))
+
+(defn query-all [v]
+  (->> v
+       (map name)
+       (string/join " ")
+       (.querySelectorAll (dom/getDocument))
+       (.from js/Array)
+       (seq)))
+
+#_(
+
+   (query [:div#connection])
+   (query-all [:div#connection])
+
+   ;; query selector
+   (->> [:div :div.stack :div#connection :p]
+        (map name)
+        (string/join " ")
+        (.querySelectorAll (dom/getDocument))
+        (.from js/Array)
+        (seq))
+
+   (->> "div div.stack" (.querySelectorAll (dom/getDocument)) (.from js/Array))
+
+   )
+
+(def text-node (.-TEXT_NODE js/Node))
+(def element-node (.-ELEMENT_NODE js/Node))
+
+;; go from DOM to hiccup
+;; some inspiration from https://gist.github.com/dpp/72e6afd1e4cf73d05565
+
+(defn mapify [el]
+  (->> el
+       (.-attributes)
+       (.-length)
+       (range)
+       (reduce
+        (fn [m i]
+          (let [e (-> el (.-attributes) (.item i))
+                k (-> e (.-name) (keyword))
+                v (-> e (.-value))]
+            (assoc m k v )))
+        (if-let [v (some-> el (.-value))]
+          {:value v}
+          {}))))
+
+(defn children [e]
+  (->> e (.-childNodes) (.from js/Array) #_(seq)))
+
+(defn hiccupify [e]
+  (condp = (.-nodeType e)
+    element-node
+    (into
+     [(-> e (.-localName) (keyword))
+      (-> e (mapify))]
+     (->> e (children) (map hiccupify)))
+
+    text-node
+    (-> e (.-data))))
+
+(def hiccupify-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:event/keys [target]
+             :as x}]
+       (->> (assoc x :dom/hiccup (hiccupify target))
+            (rf acc))))))
+
+#_(
+   (.-ELEMENT_NODE js/Node)
+   (.-TEXT_NODE js/Node)
+
+   (->> (query [:#waitlist])
+        (hiccupify))
+
+   (->> (query [:#connection])
+        (.-children)
+        (.from js/Array)
+        (seq)
+        #_(map (fn [e] (.-name e))))
+
+   (letfn [(mapify [node]
+             (->> node
+                  (.-attributes)
+                  (.-length)
+                  (range)
+                  (reduce
+                   (fn [m i]
+                     (let [e (-> node (.-attributes) (.item i))
+                           k (-> e (.-name) (keyword))
+                           v (-> e (.-value))]
+                       (assoc m k v )))
+                   (if-let [v (some-> node (.-value))]
+                     {:value v}
+                     {}))))
+           (children [e] (->> e (.-childNodes) (.from js/Array) (seq)))
+           (hiccupify [e]
+             (cond
+               (= (.-nodeType e) 1) ;; element
+               (into
+                [(some-> e (.-localName) (string/lower-case) (keyword))
+                 (some->> e (mapify))]
+                (some->> e (children) (map hiccupify)))
+
+               (= (.-nodeType e) 3) ;; text
+               (-> e (.-data))))
+           (branch? [e] (.hasChildNodes e))]
+     (->> (query [:#waitlist])
+          (hiccupify)
+          #_(take 2)
+          ))
+
+   (into []
+         (comp (map (fn [x]
+                      (assoc x
+                             :event/target (query [:#connection])
+                             :dom/hiccup [:div [:p "foo" [:strong " bar "] "baz"]])))
+               render-rf)
+         [{}])
+
+   (->> (-> (query [:#email]) (.-parentNode))
+        (hiccupify)
+        (last)
+        (last))
+
+   (let [hiccup (-> (query [:#email]) (.-parentNode) (hiccupify))
+         v (butlast hiccup)
+         {:keys [value] :as m} (-> hiccup
+                                   (last)
+                                   (last))]
+     #_(get-in hiccup [3 1])
+     (update-in hiccup [3 1] update :value str "foo")
+     #_(-> m
+         (assoc :value (str value ".com"))
+         (->> (concat [:input])
+              (concat v)))
+     #_v
+     #_hiccup)
+
+   (into []
+         (comp
+          (map (fn [x]
+                 (assoc x :event/target (-> (query [:#email]) (.-parentNode)))))
+          hiccupify-rf
+          (map (fn [{:dom/keys [hiccup]
+                     :as x}]
+                 (assoc x
+                        :dom/hiccup
+                        (update-in hiccup [3 1] update :value str ".com"))))
+          render-rf)
+         [{}])
+
+   (let [v [:foo {:bar :baz}]]
+     (-> v
+      (get 1)
+      (assoc :bar :bazz)
+      (->> (conj [(first v)]))))
+
+   )
+
+
 ;; incremental dom
 ;; adapted from https://github.com/christoph-frick/cljs-incremental-dom/blob/master/src/incdom/core.cljs
 
@@ -32,6 +202,7 @@
    (extract :div#id.foo.bar {:id :bar :class "baz"})
    (extract :div#id.foo.bar {:id :bar})
    (extract :div {:key :key})
+
 
    )
 
@@ -110,6 +281,27 @@
             :else (text r)))
         (element-close elem)))))
 
+;; TODO: support targeting multiple nodes?
+;; TODO: switch src for target?
+(def render-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:event/keys [src target targets]
+             :dom/keys [hiccup]
+             :as x}]
+       (doseq [src (cond
+                     src [src]
+                     target [target]
+                     :else targets)]
+         (patch src
+                (fn []
+                  (html hiccup))))
+       (rf acc x)))))
+
+;; TODO: remove code below
+
 ;; move to rf.cljc
 
 (def identity-rf
@@ -161,19 +353,7 @@
                        :perf/end (.now js/performance))
                 (rf acc))))))))
 
-(def render-rf
-  (fn [rf]
-    (fn
-      ([] (rf))
-      ([acc] (rf acc))
-      ([acc {:event/keys [src target type]
-             :dom/keys [hiccup]
-             :component/keys [state]
-             :as x}]
-       (patch src
-              (fn []
-                (html hiccup)))
-       (rf acc x)))))
+
 
 (defn register! [src type rf x]
   (let [xrf (rf (result-fn))
@@ -280,18 +460,18 @@
                                type
                                (fn [e]
                                  (xrf acc (assoc x #_(xrf)
-                                                :context/rf xrf
-                                                :context/x x
-                                                :event/target (.-target e)
-                                                :event/type (.-type e)
-                                                :event/src (.-currentTarget e)
-                                                :event/event e))))
+                                                 :context/rf xrf
+                                                 :context/x x
+                                                 :event/target (.-target e)
+                                                 :event/type (.-type e)
+                                                 :event/src (.-currentTarget e)
+                                                 :event/event e))))
                 (vreset! listen))
            #_(->> (assoc x :listener/key @listen)
-                (xrf acc)))
+                  (xrf acc)))
          #_acc
          (->> (assoc x :listener/key @listen)
-                (rf acc)))))))
+              (rf acc)))))))
 
 (def init-rf
   (comp
@@ -303,7 +483,7 @@
 
 ;; setup registry
 #_(defn init []
-  (register! (dom/getDocument) :load init-rf x))
+    (register! (dom/getDocument) :load init-rf x))
 
 
 ;; Network stuff

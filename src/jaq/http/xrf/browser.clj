@@ -558,8 +558,21 @@
                  :source-map #_true "tmp/app.js.map"
                  :closure-defines {"goog.DEBUG" false}
                  ;;:infer-externs true
+                 :libs ["tmp/inferred_externs.js"]
                  }
                 cenv)
+
+   (cljsc/build "src"
+                {:optimizations :advanced #_:simple #_:none
+                 :output-dir "tmp"
+                 :output-to "tmp/app.js"
+                 :fingerprint true
+                 :verbose true
+                 :source-map #_true "tmp/app.js.map"
+                 :closure-defines {"goog.DEBUG" false}
+                 :infer-externs true
+                 ;;:libs ["tmp/inferred_externs.js"]
+                 })
    *ns*
    *e
 

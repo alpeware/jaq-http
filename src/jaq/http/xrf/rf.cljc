@@ -179,13 +179,15 @@
         ([acc x]
          (let [x' (try
                     (xrf nil x)
-                    (catch Exception ex
+                    (catch #?(:cljs js/Error :clj Exception) ex
                       ex))]
            (cond
-             (instance? e x')
+             #?(:cljs (instance? e x')
+                :clj (instance? e x'))
              (rf acc (f (assoc x :error/exception x')))
 
-             (instance? Exception x')
+             #?(:cljs (instance? js/Error x')
+                :clj (instance? Exception x'))
              (throw x')
 
              (xrf)
@@ -197,6 +199,17 @@
 #_(
    (in-ns 'jaq.http.xrf.rf)
    *e
+
+   :cljs
+   (into []
+         (catch-rf
+          js/Error
+          (fn [x] (assoc x :c :nan))
+          (comp
+           (map (fn [{:keys [a b] :as x}]
+                  (throw (js/Error. "error"))
+                  #_(assoc x :c (/ a b))))))
+         [{:a 4 :b 0} {:a 3 :b 1}])
 
    (into []
          (catch-rf
@@ -346,8 +359,71 @@
 ;; cljs event handling
 ;; TODO: adapt for clj
 
+#?(:cljs
+   (defn add-listeners! [selector event-target types]
+     (doseq [e types]
+       (-> event-target
+           (.addEventListener
+            (name e)
+            (fn [event]
+              (let [event-name (-> event (.-constructor) (.-name) (keyword))
+                    event-type (-> event (.-type) (keyword))
+                    target (-> event (.-target))]
+                (when-not (-> @selector
+                              (get-in [event-target event-type])
+                              (vals))
+                  (prn ::event ::no ::listeners event-name event-type target))
+                (doseq [{:context/keys [rf acc x cont-rf]
+                         {event-once :event/once
+                          event-cont :event/cont} :context/x
+                         :window/keys [channel]} (-> @selector
+                                                     (get-in [event-target event-type])
+                                                     (vals))]
+                  (prn ::event channel event-name event-type event-once target)
+                  (rf acc (assoc x
+                                 :context/rf rf
+                                 :context/x x
+                                 :event/event event
+                                 :event/name event-name
+                                 :event/type event-type
+                                 :event/target target
+                                 :window/selector selector
+                                 :window/channel channel))
+                  (when (or (rf) event-once)
+                    (prn ::event ::deregister channel)
+                    (deregister! selector event-target event-type channel)
+                    #_(when (and event-cont cont-rf)
+                        (prn ::event ::cont channel)
+                        (cont-rf acc (assoc x
+                                            :context/rf rf
+                                            :context/x x
+                                            :event/cont :done
+                                            :event/event event
+                                            :event/name event-name
+                                            :event/type event-type
+                                            :event/target target
+                                            :window/selector selector
+                                            :window/channel channel))))))))))))
+
 (defn selector! []
   (volatile! {}))
+
+;; TODO: addEventListener to new target
+(defn replace! [selector old-target new-target]
+  (vswap! selector
+          (fn [v o n] (-> v
+                          (assoc n (get v o))
+                          (dissoc o)))
+          old-target new-target))
+
+#_(
+   (let [m (volatile! {:target {:type {:channel :x}}})
+         target (:target @m)]
+     (vswap! m (fn [v o n] (-> v
+                               (assoc n (o v))
+                               (dissoc o))) :target :target-new)
+     )
+   )
 
 (defn register! [selector event-target event-type attachment channel]
   (vswap! selector assoc-in [event-target event-type channel] attachment))
@@ -371,6 +447,9 @@
          (->> (assoc x :window/selector @sl)
               (rf acc)))))))
 
+
+
+;; TODO: abstract event target to support watching atoms?
 #?(:cljs
    (def select-rf
      (fn [rf]
@@ -384,38 +463,7 @@
                   :as x}]
             (when-not @once
               (prn ::listeners #_event-target types)
-              (doseq [e types]
-                (-> event-target
-                    (.addEventListener
-                     (name e)
-                     (fn [event]
-                       (let [event-name (-> event (.-constructor) (.-name) (keyword))
-                             event-type (-> event (.-type) (keyword))
-                             target (-> event (.-target))]
-                         #_(.info js/console "event" event)
-                         #_(prn ::event event-name event-type )
-                         (when-not (-> @selector
-                                       (get-in [event-target event-type])
-                                       (vals))
-                           (prn ::event ::no ::listeners event-name event-type target))
-                         (doseq [{:context/keys [rf acc x]
-                                  {event-once :event/once} :context/x
-                                  :window/keys [channel]} (-> @selector
-                                                              (get-in [event-target event-type])
-                                                              (vals))]
-                           (prn ::event channel event-name event-type event-once target)
-                           (rf acc (assoc x
-                                          :context/rf rf
-                                          :context/x x
-                                          :event/event event
-                                          :event/name event-name
-                                          :event/type event-type
-                                          :event/target target
-                                          :window/selector selector
-                                          :window/channel channel))
-                           (when (or (rf) event-once)
-                             (prn ::event ::deregister channel)
-                             (deregister! selector event-target event-type channel))))))))
+              (add-listeners! selector event-target types)
               (vreset! once true))
             (rf acc x)))))))
 
@@ -476,6 +524,37 @@
                   (->> (assoc x :window/channel @channel)
                        (rf acc)))))))))
 
+#?(:cljs
+   (defn watch-rf [xf]
+     (fn [rf]
+       (let [channel (volatile! nil)]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:event/keys [target]
+                  event-once :event/once
+                  :as x}]
+            (when-not @channel
+              (let [xrf (xf (result-fn))]
+                (->> (random-uuid)
+                     (vreset! channel))
+                (->> (fn [ch target before after]
+                       ;; TODO: add support for once
+                       ;; TODO: remove watch same as select-rf
+                       (xrf acc (assoc x
+                                       :event/target target
+                                       :event/before before
+                                       :event/after after
+                                       :window/channel ch))
+                       (when (or (xrf) event-once)
+                         (.setTimeout js/window
+                                      (fn []
+                                        (prn ::removing @channel)
+                                        (remove-watch target @channel)) 0)))
+                     (add-watch target @channel))))
+            (->> (assoc x :window/channel @channel)
+                 (rf acc))))))))
+
 #_(
    (clojure.set/difference
     #{:event/event :db/request :crypto/algorithm :db/default :event/target :rtc/peer :db/store :http/path :rtc/channel :event/types :db/db :db/mode :db/name :db/value :db/key :event/src :rtc/channel-name :rtc/certificate :device/uuid :db/transaction :crypto/extractable :context/x :listener/key :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :async/promise :window/channel :db/version}
@@ -529,6 +608,7 @@
            ([] (rf))
            ([acc] (rf acc))
            ([acc {:event/keys [src type timeout]
+                  :or {timeout 0}
                   :as x}]
             (when-not @deferred
               (->> (fn []
@@ -539,6 +619,60 @@
               (.setTimeout js/window @deferred timeout))
             (->> (assoc x :async/deferred @deferred)
                  (rf acc))))))))
+
+#?(:cljs
+   (defn schedule-rf [xf]
+     (fn [rf]
+       (let [deferred (volatile! nil)
+             d (volatile! nil)
+             defer-fn (fn [t]
+                        (.setTimeout js/window @deferred t))
+             xrf (xf (result-fn))]
+         (fn
+           ([] (rf))
+           ([acc] (rf acc))
+           ([acc {:event/keys [timeout timeout-fn]
+                  :or {timeout 100
+                       timeout-fn (fn [t] (* 2 t))}
+                  :as x}]
+            (when-not @deferred
+              (vreset! d timeout)
+              (->> (fn []
+                     (xrf acc (assoc x
+                                     :event/timeout @d
+                                     :context/rf xrf
+                                     :context/x x))
+                     (if-let [x' (xrf)]
+                       (rf acc x')
+                       (->> timeout-fn
+                            (vswap! d)
+                            (defer-fn))))
+                   (vreset! deferred))
+              (@deferred))
+            acc))))))
+
+#_(
+   (def state (volatile! []))
+   (into []
+         (comp
+          (schedule-rf (comp
+                        (map (fn [{:context/keys [state]
+                                   :event/keys [timeout]
+                                   :as x}]
+                               (prn timeout)
+                               (vswap! state conj timeout)
+                               x))
+                        (drop-while (fn [{:event/keys [timeout]}]
+                                      (< timeout 500)))))
+          (map (fn [{:context/keys [state] :as x}]
+                 (vswap! state conj :end)
+                 x))
+          (drop-while (fn [_] true)))
+         [{:event/timeout 100
+           :context/state (volatile! nil) #_state}])
+   @state
+
+   )
 
 ;; persist rfs
 
