@@ -178,8 +178,9 @@
         ([acc] (rf acc))
         ([acc x]
          (let [x' (try
-                    (xrf nil x)
+                    (xrf acc x)
                     (catch #?(:cljs js/Error :clj Exception) ex
+                      (prn ::catch)
                       ex))]
            (cond
              #?(:cljs (instance? e x')
@@ -190,11 +191,12 @@
                 :clj (instance? Exception x'))
              (throw x')
 
-             (xrf)
-             (rf acc (xrf))
-
              :else
-             acc)))))))
+             (if-let [x' (xrf)]
+               (do
+                 (rf acc x'))
+               acc)
+             )))))))
 
 #_(
    (in-ns 'jaq.http.xrf.rf)
@@ -252,6 +254,28 @@
    *ns*
 
    )
+
+(defn continuation-rf [xf]
+  (fn [rf]
+    (let [xrf (volatile! nil)
+          crf (fn [parent-rf]
+                (fn [rf]
+                  (fn
+                    ([] (rf))
+                    ([acc] (rf acc))
+                    ([acc x]
+                     (parent-rf acc x)))))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc {:http/keys [host port]
+               :as x}]
+         (when-not @xrf
+           (vreset! xrf ((comp
+                          xf
+                          (crf rf))
+                         (result-fn))))
+         (@xrf acc x))))))
 
 (defn debug-rf [tag]
   (fn [rf]
@@ -626,6 +650,7 @@
        (let [deferred (volatile! nil)
              d (volatile! nil)
              defer-fn (fn [t]
+                        (prn ::scheduling t)
                         (.setTimeout js/window @deferred t))
              xrf (xf (result-fn))]
          (fn

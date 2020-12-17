@@ -94,14 +94,17 @@
                 :need-unwrap
                 (let [^ByteBuffer bb (block)]
                   (if (.hasRemaining bb)
-                    (let [result (try
-                                   (-> engine
-                                       (.unwrap bb empty-buffer)
-                                       (result?))
-                                   ;; TODO: handle SSL errors
-                                   (catch SSLException e
-                                     (prn ::unwrap e)
-                                     :buffer-underflow))]
+                    (let [result (-> engine
+                                     (.unwrap bb empty-buffer)
+                                     (result?))
+                          #_(try
+                            (-> engine
+                                (.unwrap bb empty-buffer)
+                                (result?))
+                            ;; TODO: handle SSL errors
+                            (catch SSLException e
+                              (prn ::unwrap e)
+                              :buffer-underflow))]
                       (condp = result
                         :buffer-overflow
                         :buffer-overflow
@@ -407,14 +410,14 @@
            (let [^ByteBuffer bb (block)
                  ^ByteBuffer scratch (reserve)
                  result (if (.hasRemaining bb)
-                            (try
-                              (-> ^SSLEngine engine
-                                  (.unwrap bb scratch)
-                                  (result?))
-                              (catch SSLException e
-                                (prn e)
-                                :buffer-underflow))
-                            :buffer-underflow)]
+                          (try
+                            (-> ^SSLEngine engine
+                                (.unwrap bb scratch)
+                                (result?))
+                            (catch SSLException e
+                              (prn e)
+                              :buffer-underflow))
+                          :buffer-underflow)]
              (condp = result
                :closed
                (throw (IllegalStateException. "Connection closed"))

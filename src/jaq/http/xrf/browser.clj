@@ -562,6 +562,7 @@
                  }
                 cenv)
 
+   (in-ns 'jaq.http.xrf.browser)
    (cljsc/build "src"
                 {:optimizations :advanced #_:simple #_:none
                  :output-dir "tmp"

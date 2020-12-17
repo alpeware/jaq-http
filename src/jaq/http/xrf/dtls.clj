@@ -633,7 +633,10 @@
            (let [^ByteBuffer bb (block)
                  ^ByteBuffer scratch (reserve)
                  result (if (.hasRemaining bb)
-                          (try
+                          (-> ^SSLEngine engine
+                              (.unwrap bb scratch)
+                              (result?))
+                          #_(try
                             (-> ^SSLEngine engine
                                 (.unwrap bb scratch)
                                 (result?))
