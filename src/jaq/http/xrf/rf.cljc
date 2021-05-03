@@ -164,7 +164,7 @@
              (xrf acc x)
              (if-let [x' (xrf)]
                (do
-                 (prn ::done)
+                 #_(prn ::done)
                  (vreset! val x')
                  (vreset! once true)
                  (rf acc (assoc x k x')))

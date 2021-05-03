@@ -181,7 +181,8 @@
       (cond
         (nil? socket-address) ;; end of stream?
         (do
-          (prn ::eos selection-key)
+          #_(prn ::eos selection-key)
+          ::noop
           #_(.interestOps selection-key 0)
           #_(.cancel selection-key))
 
@@ -191,7 +192,7 @@
           (->> bb
                (.flip)
                (commit))
-          (prn ::received ::from socket-address ::bb bb)
+          #_(prn ::received ::from socket-address ::bb bb)
           ))
       socket-address)))
 
@@ -207,12 +208,13 @@
       (when (and (.hasRemaining bb) host port)
         (let [target (address host port)]
           (send-datagram-channel channel target bb)
-          (prn ::wrote (.position bb) ::to target)
+          #_(prn ::wrote (.position bb) ::to target)
           (decommit bb)))
       (.position bb))))
 
 #_(
    (in-ns 'jaq.http.xrf.nio)
+   (require 'jaq.http.xrf.nio :reload)
    *e
    (-> x :nio/selector (.keys) (first) (.attachment) :context/x (read!))
    (-> x :nio/selector (.keys) (first) (.attachment) :context/x :nio/selection-key)
@@ -399,7 +401,7 @@
                  (.flip dst)
                  (commit dst)
                  (let [written (datagram-send! x)]
-                   (prn ::written written)
+                   #_(prn ::written written)
                    (if-not (> written 0)
                      (do
                        ;; socket buffer full so waiting to clear
@@ -444,7 +446,7 @@
                         (xrf acc))
                    (when (and (.hasRemaining bb) (not (xrf)))
                      (recur)))
-                 (prn bb)
+                 #_(prn bb)
                  (decommit bb)
                  (if-let [xr (xrf)]
                    (do
@@ -479,7 +481,7 @@
                         (xrf acc))
                    (when (and (.hasRemaining bb) (not (xrf)))
                      (recur)))
-                 (prn bb)
+                 #_(prn bb)
                  (decommit bb)
                  (if-let [xr (xrf)]
                    (do

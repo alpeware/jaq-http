@@ -224,7 +224,9 @@
    (handshake! engine x (.getHandshakeStatus engine)))
   ([^SSLEngine engine x ^SSLEngineResult$HandshakeStatus handshake-status]
    (let [{:nio/keys [selection-key]
-          {:keys [reserve commit]} :nio/out
+          :ssl/keys [packet-size]
+          {:keys [reserve commit]
+           block-out :block} :nio/out
           {:keys [block decommit]} :nio/in} x
          hs (handshake? engine)
          ;;_ (prn ::hs hs)
@@ -316,11 +318,15 @@
                       (handshake? engine))))
                 :waiting-for-input
                 :noop)]
-     #_(prn ::step step)
+     (prn ::step step)
      (let []
-       (if-not (contains?  #{:need-task :need-wrap :need-unwrap} step)
+       #_(if-not (contains?  #{:need-task :need-wrap :need-unwrap} step)
          step
-         (handshake! engine x (.getHandshakeStatus engine)))))))
+         (handshake! engine x (.getHandshakeStatus engine)))
+       (if (and (contains?  #{:need-task :need-wrap :need-unwrap :need-unwrap-again} step)
+                (-> (block-out) (.hasRemaining) (not)))
+         (handshake! engine x (.getHandshakeStatus engine))
+         step)))))
 
 #_(
    (in-ns 'jaq.http.xrf.dtls)
@@ -332,7 +338,6 @@
   (SSLContext/getInstance "DTLS"))
 
 #_(
-
    (->> (context) (.getDefaultSSLParameters))
    (->> (context) (.getSupportedSSLParameters))
    )
@@ -517,13 +522,16 @@
         ([acc {:http/keys [host]
                :nio/keys [attachment ^SelectionKey selection-key]
                :ssl/keys [engine]
+               {:keys [reserve commit block decommit] :as bip} :nio/out
                :as x}]
          (let [hs (-> engine (handshake?))]
-           #_(prn ::handhsake hs ::x x)
+           #_(prn ::handshake hs)
            (if-not (contains? #{:finished :not-handshaking} hs)
              (do
-               (handshake! engine x)
-               #_(prn ::written ::hs (nio/datagram-send! x))
+               ;; TODO: skip if out buffer is still full
+               (if (-> (block) (.hasRemaining))
+                 (prn ::written ::hs (nio/datagram-send! x))
+                 (handshake! engine x))
                acc)
              (do
                (when-not @status
@@ -592,7 +600,7 @@
                        (if-not (> written 0)
                          (do
                            ;; socket buffer full so waiting to clear
-                           (nio/writable! selection-key)
+                           #_(nio/writable! selection-key)
                            acc)
                          (do
                            (recur acc x)))))))
@@ -703,6 +711,7 @@
    *e
    *ns*
    (require 'jaq.http.xrf.dtls :reload)
+
    (in-ns 'jaq.http.xrf.dtls)
    *e
 
