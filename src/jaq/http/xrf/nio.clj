@@ -861,7 +861,7 @@
          (if (-> selector (.keys) (empty?))
            (rf acc x)
            (do
-             (when (> (select! selector timeout) 0)
+             (if (> (select! selector timeout) 0)
                (let [^Set keys-set (.selectedKeys selector)
                      selected-keys (into #{} keys-set)]
                  (.clear keys-set)
@@ -869,14 +869,22 @@
                    (let [{:context/keys [rf acc x]
                           :as attachment} (.attachment sk)]
                      ;; TODO: should we do something w/ return values from channels like cleaning up?
-                     (when-not (:nio/out x)
-                       #_(prn ::sk sk ::attachment attachment))
                      (rf acc (assoc x
                                     :nio/selection-key sk
                                     :context/rf rf
-                                    :context/x x
-                                    ;;:nio/attachment attachment
-                                    ))))))
+                                    :context/x x)))))
+               ;; timed out and possible calling writes or handling other timing related issues
+               ;; not triggered by a read
+               (let [^Set keys-set (.keys selector)
+                     selected-keys (into #{} keys-set)]
+                 (doseq [^SelectionKey sk selected-keys]
+                   (let [{:context/keys [rf acc x]
+                          :as attachment} (.attachment sk)]
+                     ;; TODO: should we do something w/ return values from channels like cleaning up?
+                     (rf acc (assoc x
+                                    :nio/selection-key sk
+                                    :context/rf rf
+                                    :context/x x))))))
              acc)))))))
 
 (def close-rf
