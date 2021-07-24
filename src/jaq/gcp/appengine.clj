@@ -180,13 +180,13 @@
    ;;:threadsafe true
    :env "standard"
    :automaticScaling {:maxConcurrentRequests 80
-                      :maxIdleInstances 1
+                      ;;:maxIdleInstances 1
                       :maxPendingLatency "15s"
-                      :minIdleInstances 0
+                      ;;:minIdleInstances 0
                       :minPendingLatency "10s"
                       :standardSchedulerSettings {:targetCpuUtilization 0.95
                                                   :targetThroughputUtilization 0.95
-                                                  :minInstances 0
+                                                  ;;:minInstances 0
                                                   :maxInstances 1}}})
 
 ;; TODO: static file handlers

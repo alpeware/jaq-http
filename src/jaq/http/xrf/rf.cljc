@@ -44,7 +44,22 @@
       ([acc x]
        (rf acc x)))))
 
+;; TODO: rename to assoc
 (defn once-rf [f]
+  (fn [rf]
+    (let [once (volatile! false)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (if @once
+           (rf acc x)
+           (do
+             (vreset! once true)
+             (->> (f x)
+                  (rf acc)))))))))
+
+(defn assoc-rf [f]
   (fn [rf]
     (let [once (volatile! false)]
       (fn
@@ -125,9 +140,10 @@
              (when-not @coll
                (->> (k x)
                     (vreset! coll)))
-             (->> @coll (assoc x k) (xrf acc))
-             (when-let [x' (xrf)]
-               (vswap! coll rest))
+             (when (seq @coll)
+               (->> @coll (assoc x k) (xrf acc))
+               (when-let [x' (xrf)]
+                 (vswap! coll rest)))
              (if (empty? @coll)
                (do
                  (vreset! once true)
@@ -147,6 +163,63 @@
                      identity-rf
                      (map (fn [{:keys [coll] :as x}] (prn (first coll)) x)))))
          [{:coll (range 10)}])
+   )
+
+(defn reduce-rf [acck collk xf]
+  (fn [rf]
+    (let [once (volatile! nil)
+          coll (volatile! nil)
+          val (volatile! nil)
+          vacc (volatile! nil)
+          xrf (xf (result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (if-not @once
+           (do
+             (when-not @coll
+               (->> (collk x)
+                    (vreset! coll)))
+             (when-not @vacc
+               (->> (acck x)
+                    (vreset! vacc)))
+             (when (seq @coll)
+               (->> (assoc x
+                           acck @vacc
+                           collk @coll)
+                    (xrf acc))
+               (when-let [x' (xrf)]
+                 (vswap! coll rest)
+                 (vreset! vacc (-> (acck x')))))
+             (if (empty? @coll)
+               (do
+                 (vreset! once true)
+                 (->> (assoc x
+                             acck @vacc
+                             collk @coll)
+                      (rf acc)))
+               (recur acc x)))
+           (->> (assoc x
+                       acck @vacc
+                       collk @coll)
+                (rf acc))))))))
+
+#_(
+   (in-ns 'jaq.http.xrf.rf)
+   (into []
+         (comp
+          identity-rf
+          #_(map (fn [x] (prn x) x))
+          (reduce-rf :acc
+                     :coll
+                    (comp
+                     identity-rf
+                     (map (fn [{:keys [acc coll] :as x}]
+                            (assoc x :acc (+ acc (first coll)))))))
+          #_(map (fn [x] (prn x) x)))
+         [{:coll (range 10) :acc 0}])
+
    )
 
 (defn one-rf [k xf]
@@ -180,7 +253,7 @@
          (let [x' (try
                     (xrf acc x)
                     (catch #?(:cljs js/Error :clj Exception) ex
-                      (prn ::catch)
+                      #_(prn ::catch)
                       ex))]
            (cond
              #?(:cljs (instance? e x')
@@ -650,7 +723,7 @@
        (let [deferred (volatile! nil)
              d (volatile! nil)
              defer-fn (fn [t]
-                        (prn ::scheduling t)
+                        #_(prn ::scheduling t)
                         (.setTimeout js/window @deferred t))
              xrf (xf (result-fn))]
          (fn
@@ -673,7 +746,8 @@
                             (vswap! d)
                             (defer-fn))))
                    (vreset! deferred))
-              (@deferred))
+              #_(@deferred)
+              (defer-fn timeout))
             acc))))))
 
 #_(

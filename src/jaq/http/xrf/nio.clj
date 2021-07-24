@@ -156,7 +156,7 @@
       (cond
         (< n 0) ;; end of stream
         (do
-          (prn ::eos selection-key)
+          #_(prn ::eos selection-key)
           (.interestOps selection-key 0)
           (.cancel selection-key))
 
@@ -230,7 +230,7 @@
           (write-channel channel bb)
           (decommit bb)
           (catch IOException ex
-            (prn ::eos selection-key)
+            #_(prn ::eos selection-key)
             (.interestOps selection-key 0)
             (.cancel selection-key)))
         #_(prn ::wrote (.position bb)))
@@ -322,6 +322,7 @@
                                (instance? ByteBuffer e)
                                e)))
                       (vreset! requests))))
+
              (when (and @request (not (.hasRemaining @request)))
                (vreset! request nil))
              (when (and (seq @requests) (not @request))
@@ -329,7 +330,9 @@
                     (first)
                     (vreset! request))
                (vswap! requests rest))
-             (if (and @request (.hasRemaining @request))
+             #_(prn ::remaining (some-> @request (.hasRemaining)))
+             (cond
+               (and @request (.hasRemaining @request))
                (let [dst (reserve)
                      limit (min (.remaining @request) (.remaining dst))
                      src (-> @request (.duplicate) #_(.limit limit))
@@ -340,7 +343,7 @@
                  (.flip dst)
                  (commit dst)
                  (let [written (write! x)]
-                   #_(prn ::written written)
+                   #_(prn ::written written (.hasRemaining @request) (.remaining @request) )
                    (if-not (> written 0)
                      (do
                        ;; socket buffer full so waiting to clear
@@ -348,11 +351,25 @@
                        acc)
                      (do
                        (recur acc x)))))
-               (if (empty? @requests)
-                 (do
-                   (vreset! once true)
-                   (rf acc x))
-                 acc)))))))))
+
+               (some-> (block) (.hasRemaining))
+               (let [written (write! x)]
+                 #_(prn ::written written)
+                 (if-not (> written 0)
+                   (do
+                     ;; socket buffer full so waiting to clear
+                     (writable! selection-key)
+                     acc)
+                   (do
+                     (recur acc x))))
+
+               (empty? @requests)
+               (do
+                 (vreset! once true)
+                 (rf acc x))
+
+               :else
+               acc))))))))
 
 (defn datagram-send-rf [xf]
   (fn [rf]
@@ -405,7 +422,8 @@
                    (if-not (> written 0)
                      (do
                        ;; socket buffer full so waiting to clear
-                       (writable! selection-key)
+                       ;; TODO: should wait until outbuffer cleared here
+                       #_(writable! selection-key)
                        acc)
                      (do
                        (recur acc x)))))
@@ -517,7 +535,7 @@
              (vreset! once true)))
          (let [bb (block)]
            (if (.hasRemaining bb)
-             (rf acc)
+             acc
              (rf acc x))))))))
 
 (def read-rf

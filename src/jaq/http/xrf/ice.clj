@@ -130,7 +130,7 @@
                   (recur (stun/decode-attributes x'))))
               x))))
    (map (fn [{:stun/keys [port ip message length cookie id] :as x}]
-          (prn ::stun message length cookie id)
+          #_(prn ::stun message length cookie id)
           x))
    (take 1)))
 

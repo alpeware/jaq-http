@@ -389,16 +389,18 @@
                                          (string/includes? serviceType "WANIP")))
                       (first))
          service-type (:serviceType service)
-         action #_"GetExternalIPAddress" "AddPortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
+         action #_"GetExternalIPAddress" "AddPortMapping" #_"DeletePortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
          args #_{} #_{:NewPortMappingIndex "0"}
+         ;; use to delete
          #_{:NewRemoteHost "" :NewProtocol "UDP"
             :NewExternalPort "60000"}
          #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
             :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
             :NewEnabled "1" :NewPortMappingDescription "alpeware"
             :NewLeaseDuration "0"}
+         ;; pi
          {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
-            :NewInternalClient "192.168.1.140" :NewInternalPort "60000"
+            :NewInternalClient "192.168.1.216" :NewInternalPort "60000"
             :NewEnabled "1" :NewPortMappingDescription "datachannel"
             :NewLeaseDuration "0"}
          soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
