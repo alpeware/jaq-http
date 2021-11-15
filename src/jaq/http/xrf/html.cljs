@@ -14,19 +14,21 @@
   re-tag #"([^\s\.#]+)(?:#([^\s\.#]+))?(?:\.([^\s#]+))?")
 
 ;; query selector
-(defn query [v]
-  (->> v
-       (map name)
-       (string/join " ")
-       (.querySelector (dom/getDocument))))
+(defn query
+  ([v] (query (dom/getDocument) v))
+  ([el v] (->> v
+            (map name)
+            (string/join " ")
+            (.querySelector el))))
 
-(defn query-all [v]
-  (->> v
-       (map name)
-       (string/join " ")
-       (.querySelectorAll (dom/getDocument))
-       (.from js/Array)
-       (seq)))
+(defn query-all
+  ([v] (query-all (dom/getDocument) v))
+  ([el v] (->> v
+            (map name)
+            (string/join " ")
+            (.querySelectorAll el)
+            (.from js/Array)
+            (seq))))
 
 #_(
 

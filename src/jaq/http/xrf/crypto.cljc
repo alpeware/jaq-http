@@ -144,10 +144,12 @@
    (def sha256-rf
      (comp
       (rf/await-rf :crypto/hash
-                   (fn [{:crypto/keys [s] :as x}]
-                     (->> s
-                          (.encode (js/TextEncoder.))
-                          (js/window.crypto.subtle.digest "SHA-256"))))
+                   (fn [{:crypto/keys [s data] :as x}]
+                     (let [data (if s
+                                  (->> s (.encode (js/TextEncoder.)))
+                                  data)]
+                       (->> data
+                            (js/window.crypto.subtle.digest "SHA-256")))))
       (rf/one-rf :crypto/sha256
                  (map (fn [{:crypto/keys [hash] :as x}]
                         (->> hash
@@ -172,6 +174,17 @@
                     x))
              (drop-while (fn [_] true)))
          [{:crypto/s "foobar"}])
+
+   (into [] (comp
+             sha256-rf
+             (map (fn [{:crypto/keys [sha256] :as x}]
+                    (assoc x :crypto/sha256 (->> sha256 (string/join "-")))))
+             (map (fn [{:crypto/keys [sha256] :as x}]
+                    (prn sha256)
+                    x))
+             (drop-while (fn [_] true)))
+         [{:crypto/data (->> "foobar" (.encode (js/TextEncoder.)))}])
+
    )
 
 ;; clj
