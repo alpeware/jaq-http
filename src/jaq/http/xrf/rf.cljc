@@ -44,22 +44,7 @@
       ([acc x]
        (rf acc x)))))
 
-;; TODO: rename to assoc
 (defn once-rf [f]
-  (fn [rf]
-    (let [once (volatile! false)]
-      (fn
-        ([] (rf))
-        ([acc] (rf acc))
-        ([acc x]
-         (if @once
-           (rf acc x)
-           (do
-             (vreset! once true)
-             (->> (f x)
-                  (rf acc)))))))))
-
-(defn assoc-rf [f]
   (fn [rf]
     (let [once (volatile! false)]
       (fn
@@ -165,6 +150,7 @@
          [{:coll (range 10)}])
    )
 
+;; TODO: does not work w/ cljs async
 (defn reduce-rf [acck collk xf]
   (fn [rf]
     (let [once (volatile! nil)
@@ -213,16 +199,38 @@
           #_(map (fn [x] (prn x) x))
           (reduce-rf :acc
                      :coll
-                    (comp
-                     identity-rf
-                     (map (fn [{:keys [acc coll] :as x}]
-                            (assoc x :acc (+ acc (first coll)))))))
+                     (comp
+                      identity-rf
+                      (map (fn [{:keys [acc coll] :as x}]
+                             (assoc x :acc (+ acc (first coll)))))))
           #_(map (fn [x] (prn x) x)))
          [{:coll (range 10) :acc 0}])
 
    )
 
+;; TODO: rename to assoc
 (defn one-rf [k xf]
+  (fn [rf]
+    (let [once (volatile! false)
+          val (volatile! nil)
+          xrf (xf (result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (if @once
+           (rf acc (assoc x k @val))
+           (do
+             (xrf acc x)
+             (if-let [x' (xrf)]
+               (do
+                 #_(prn ::done)
+                 (vreset! val x')
+                 (vreset! once true)
+                 (rf acc (assoc x k x')))
+               acc))))))))
+
+(defn assoc-rf [k xf]
   (fn [rf]
     (let [once (volatile! false)
           val (volatile! nil)
@@ -488,19 +496,21 @@
                                  :window/channel channel))
                   (when (or (rf) event-once)
                     (prn ::event ::deregister channel)
-                    (deregister! selector event-target event-type channel)
-                    #_(when (and event-cont cont-rf)
-                        (prn ::event ::cont channel)
-                        (cont-rf acc (assoc x
-                                            :context/rf rf
-                                            :context/x x
-                                            :event/cont :done
-                                            :event/event event
-                                            :event/name event-name
-                                            :event/type event-type
-                                            :event/target target
-                                            :window/selector selector
-                                            :window/channel channel))))))))))))
+                    (deregister! selector event-target event-type channel))))))))))
+
+#_(
+   (-> js/ethereum .-on)
+   (-> (html/query [:form]) .-addEventListener (type))
+   (let [el js/ethereum
+         event :chainChanged
+         listener (or (. el -addEventListener)
+                      (. el -on))]
+     (. listener call el (name event) (fn [e] (prn event e))))
+   (let [f (. js/ethereum -on)]
+     (. f call js/ethereum "chainChanged" (fn [e] (prn e))))
+
+
+   )
 
 (defn selector! []
   (volatile! {}))
@@ -651,11 +661,6 @@
                      (add-watch target @channel))))
             (->> (assoc x :window/channel @channel)
                  (rf acc))))))))
-
-#_(
-   (clojure.set/difference
-    #{:event/event :db/request :crypto/algorithm :db/default :event/target :rtc/peer :db/store :http/path :rtc/channel :event/types :db/db :db/mode :db/name :db/value :db/key :event/src :rtc/channel-name :rtc/certificate :device/uuid :db/transaction :crypto/extractable :context/x :listener/key :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :async/promise :window/channel :db/version}
-    #{:event/event :db/request :crypto/algorithm :db/default :event/target :db/store :http/path :event/types :db/db :db/mode :db/name :db/value :db/key :rtc/channel-name :rtc/certificate :db/transaction :crypto/extractable :context/x :crypto/usages :context/rf :event/type :crypto/keys :event/name :http/routes :db/options :rtc/conf :window/channel :db/version}))
 
 ;; cljs promises
 #?(:cljs

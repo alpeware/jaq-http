@@ -571,6 +571,23 @@
                  :verbose true
                  :source-map #_true "tmp/app.js.map"
                  :closure-defines {"goog.DEBUG" false}
+                 :externs ["externs/ethers-externs.js"]
+                 :infer-externs true
+                 ;;:libs ["tmp/inferred_externs.js"]
+                 })
+
+   ;; debugging advanced compilation build
+   (cljsc/build "src"
+                {:optimizations :advanced #_:simple #_:none
+                 :output-dir "tmp"
+                 :output-to "tmp/app.js"
+                 :fingerprint true
+                 :verbose true
+                 :source-map #_true "tmp/app.js.map"
+                 :closure-defines {"goog.DEBUG" false}
+                 :externs ["externs/ethers-externs.js"]
+                 :pseudo-names true
+                 :pretty-print true
                  :infer-externs true
                  ;;:libs ["tmp/inferred_externs.js"]
                  })

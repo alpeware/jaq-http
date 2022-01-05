@@ -146,7 +146,7 @@
       (rf/await-rf :crypto/hash
                    (fn [{:crypto/keys [s data] :as x}]
                      (let [data (if s
-                                  (->> s (.encode (js/TextEncoder.)))
+                                  (->> s (str) (.encode (js/TextEncoder.)))
                                   data)]
                        (->> data
                             (js/window.crypto.subtle.digest "SHA-256")))))

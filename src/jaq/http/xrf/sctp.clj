@@ -174,7 +174,7 @@
         chunk-flags (-> buf (.get) (bit-and 0xff))
         chunk-length (-> buf (.getShort) (bit-and 0xffff))
         chunk-padding (-> chunk-length (mod -4) -)]
-    (prn ::chunk chunk-type chunk-flags chunk-length chunk-padding)
+    #_(prn ::chunk chunk-type chunk-flags chunk-length chunk-padding)
     (assoc x
            :sctp/chunk-type chunk-type
            :sctp/chunk-flags chunk-flags
@@ -214,7 +214,7 @@
                    x))
    :data (fn [{:sctp/keys [buf chunk-length chunk-flags chunk-padding] :as x}]
            (let [flags (->> {:unordered (bit-test chunk-flags 2)
-                             :begining (bit-test chunk-flags 1)
+                             :beginning (bit-test chunk-flags 1)
                              :ending (bit-test chunk-flags 0)}
                             (remove (fn [[k v]] (false? v)))
                             (map (fn [[k v]] k))
@@ -302,7 +302,7 @@
 
    (range 2 4)
 
-   (->> {:unordered false :begining false :ending true}
+   (->> {:unordered false :beginning false :ending true}
         (remove (fn [[k v]] (false? v)))
         (map (fn [[k v]] k))
         (set))
@@ -441,7 +441,7 @@
         padding (-> length (mod -4) -)
         k (get parameter-map type :unknown)
         f (get decode-opt-map k)]
-    (prn ::processing ::opt type k length padding buf)
+    #_(prn ::processing ::opt type k length padding buf)
     (->> (assoc x
                 :sctp/param-type type
                 :sctp/param-length (- length 4) ;; length includes type and length
@@ -452,7 +452,7 @@
   [{:sctp/keys [buf chunk-type chunk-length] :as x}]
   (let [k (get chunk-map chunk-type)
         f (get decode-chunk-map k)]
-    (prn ::processing k chunk-length)
+    #_(prn ::processing k chunk-length)
     (->> (assoc x :sctp/chunk k)
          (f))))
 
@@ -490,7 +490,7 @@
                   (let [type (-> buf (.get) (bit-and 0xff))
                         k (get message-map type :unknown)
                         f (get decode-message-map k)]
-                    (prn ::processing ::message type k)
+                    #_(prn ::processing ::message type k)
                     (->> (assoc x
                                 :datachannel/message-type type
                                 :datachannel/message k)
@@ -518,7 +518,7 @@
 (defn decode-message [{:sctp/keys [data protocol] :as x}]
   (let [buf (->> data (byte-array) (ByteBuffer/wrap))
         f (get decode-protocol-map protocol)]
-    (prn ::protocol protocol)
+    #_(prn ::protocol protocol)
     (->> (assoc x :sctp/buf buf)
          (f))))
 
@@ -699,7 +699,7 @@
               (if-not (= (count @vacc) chunk-length)
                 acc
                 (do
-                  (prn ::chunked)
+                  #_(prn ::chunked)
                   (->> @vacc
                        (byte-array)
                        (ByteBuffer/wrap)
@@ -717,7 +717,7 @@
         ([acc] (rf acc))
         ([acc {:keys [byte]
                :sctp/keys [chunk-padding] :as x}]
-         (prn ::byte byte)
+         #_(prn ::byte byte)
          (cond
            (< @cnt chunk-padding)
            (do
@@ -740,11 +740,11 @@
                                                  (map (fn [{:context/keys [remaining]
                                                             :sctp/keys [chunk-padding]
                                                             :as x}]
-                                                        (prn ::processed ::chunk remaining chunk-padding)
+                                                        #_(prn ::processed ::chunk remaining chunk-padding)
                                                         x))
                                                  (map (fn [{:sctp/keys [buf] :as x}]
                                                         (loop [x' (->> x (decode-params))]
-                                                          (prn buf)
+                                                          #_(prn buf)
                                                           (if-not (.hasRemaining buf)
                                                             x'
                                                             (recur (decode-opt-params x'))))))
@@ -756,7 +756,7 @@
                                      (map (fn [{:context/keys [remaining]
                                                 :sctp/keys [chunk-padding]
                                                 :as x}]
-                                            (prn ::done ::chunk remaining chunk-padding)
+                                            #_(prn ::done ::chunk remaining chunk-padding)
                                             (vswap! chunks conj x)
                                             x))))
           xrf (xf (rf/result-fn))
@@ -775,7 +775,7 @@
              (xrf acc x)
              (if (= 0 remaining)
                (do
-                 (prn ::done ::chunks remaining)
+                 #_(prn ::done ::chunks remaining)
                  (vreset! done true)
                  (->> (assoc-fn x)
                       (rf acc)))
@@ -882,7 +882,7 @@
                    (let [label-length (count label)
                          protocol-length (count protocol)]
                      (def y x)
-                     (prn ::message ::open)
+                     #_(prn ::message ::open)
                      (-> buf
                          (.put (->> channel (get channels) (byte)))
                          (.putShort priority)
@@ -914,7 +914,7 @@
                       :as x}]
                   (let [f (get encode-message-map message)
                         type (get messages message)]
-                    (prn ::processing ::message type)
+                    #_(prn ::processing ::message type)
                     (-> buf
                         (.put (byte type)))
                     (->> x (f))))
@@ -1027,7 +1027,7 @@
        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+"
   [{:sctp/keys [buf chunk chunk-flags]
     :as x}]
-  (prn ::chunk (get chunks chunk) chunk chunk-flags)
+  #_(prn ::chunk (get chunks chunk) chunk chunk-flags)
   (-> buf
       (.put (-> (get chunks chunk) (byte)))
       (.put (byte chunk-flags))
@@ -1064,7 +1064,7 @@
   (doseq [{:keys [chunk chunk-flags]} chunks]
     (let [pos (.position buf)
           bb (.duplicate buf)]
-      (prn ::encoding chunk chunk-flags)
+      #_(prn ::encoding chunk chunk-flags)
       (->> (assoc x
                   :sctp/buf bb
                   :sctp/chunk-flags chunk-flags
@@ -1079,7 +1079,7 @@
             (.reset)
             (.putShort length))
         ;; forward buf
-        (prn ::padding padding pos length buf bb)
+        #_(prn ::padding padding pos length buf bb)
         (->> (+ pos length)
              (.position buf))
         ;; add chunk padding

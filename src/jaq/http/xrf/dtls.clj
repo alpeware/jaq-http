@@ -237,7 +237,7 @@
 
                 :need-task
                 (do
-                  (prn ::executing ::task)
+                  #_(prn ::executing ::task)
                   (-> (.getDelegatedTask engine)
                       ^Runnable (.run))
                   (handshake? engine))
@@ -264,8 +264,9 @@
                     (do
                       (.flip dst)
                       (commit dst)
-                      (prn ::write dst selection-key (.channel selection-key))
-                      (prn ::written ::hs (nio/datagram-send! x))
+                      #_(prn ::write dst selection-key (.channel selection-key))
+                      #_(prn ::written ::hs (nio/datagram-send! x))
+                      (nio/datagram-send! x)
                       #_(.interestOps sk SelectionKey/OP_WRITE)
                       (handshake? engine))))
 
@@ -280,7 +281,7 @@
                                    (catch SSLException e
                                      (prn ::unwrap e)
                                      :buffer-underflow))]
-                      (prn ::unwrap ::result result)
+                      #_(prn ::unwrap ::result result)
                       (condp = result
                         :buffer-overflow
                         (throw (SSLException. "buffer-overflow"))
@@ -291,7 +292,7 @@
                         :ok
                         (do
                           (decommit bb)
-                          (prn ::read bb selection-key)
+                          #_(prn ::read bb selection-key)
                           #_(.interestOps sk SelectionKey/OP_READ)
                           (handshake? engine))))
                     :waiting-for-input))
@@ -318,7 +319,7 @@
                       (handshake? engine))))
                 :waiting-for-input
                 :noop)]
-     (prn ::step step)
+     #_(prn ::step step)
      (let []
        #_(if-not (contains?  #{:need-task :need-wrap :need-unwrap} step)
          step
@@ -347,7 +348,7 @@
         tmf (TrustManagerFactory/getInstance "SunX509")]
     (.load ks nil nil)
     (doseq [{:cert/keys [alias cert]} certs]
-      (prn ::cert alias cert)
+      #_(prn ::cert alias cert)
       (.setCertificateEntry ks alias cert))
     (.init kmf ks nil)
     (.init tmf ks)
@@ -356,25 +357,25 @@
           sskm (proxy [X509ExtendedKeyManager] []
                  (chooseEngineClientAlias [key-type issuers engine]
                    (throw (Exception. "foo"))
-                   (prn ::km ::client key-type issuers engine)
+                   #_(prn ::km ::client key-type issuers engine)
                    (when (= key-type "RSA")
                      (if (.getUseClientMode engine)
                        "client"
                        "server")))
                  (chooseEngineServerAlias [key-type issuers engine]
-                   (prn ::km ::server key-type issuers engine)
+                   #_(prn ::km ::server key-type issuers engine)
                    (when (= key-type "RSA")
                      (if (.getUseClientMode engine)
                        "client"
                        "server")))
                  (getPrivateKey [alias]
-                   (prn ::km ::private-key alias)
+                   #_(prn ::km ::private-key alias)
                    (->> certs
                         (filter (fn [{target-alias :cert/alias}] (= alias target-alias)))
                         (first)
                         :cert/private-key))
                  (getCertificateChain [alias]
-                   (prn ::km ::chain alias)
+                   #_(prn ::km ::chain alias)
                    (->> certs
                         (filter (fn [{target-alias :cert/alias}] (= alias target-alias)))
                         (map :cert/cert)
@@ -383,11 +384,11 @@
           tm (aget tms 0)
           sstm (reify X509TrustManager
                  (checkClientTrusted [_ chain auth-type]
-                   (prn ::chain chain (count chain) auth-type)
+                   #_(prn ::chain chain (count chain) auth-type)
                    (when-not (= (count chain) 1)
                      (.checkClientTrusted tm chain auth-type)))
                  (checkServerTrusted [_ chain auth-type]
-                   (prn ::chain chain (count chain) auth-type)
+                   #_(prn ::chain chain (count chain) auth-type)
                    (when-not (= (count chain) 1)
                      (.checkServerTrusted tm chain auth-type)))
                  (getAcceptedIssuers [_] (.getAcceptedIssuers tm)))]
@@ -479,7 +480,7 @@
              (when mode ;; client mode
                (let [dst (reserve)]
                  #_(.beginHandshake @eng)
-                 (prn ::handshake ::client mode channel)
+                 #_(prn ::handshake ::client mode channel)
                  (-> @eng (.wrap empty-buffer dst) #_(result?))
                  (.flip dst)
                  (commit dst))))
@@ -530,12 +531,13 @@
              (do
                ;; TODO: skip if out buffer is still full
                (if (-> (block) (.hasRemaining))
-                 (prn ::written ::hs (nio/datagram-send! x))
+                 #_(prn ::written ::hs (nio/datagram-send! x))
+                 (nio/datagram-send! x)
                  (handshake! engine x))
                acc)
              (do
                (when-not @status
-                 (prn ::handshake hs)
+                 #_(prn ::handshake hs)
                  (vreset! status hs))
                (rf acc x)))))))))
 
@@ -548,7 +550,7 @@
       (fn
         ([] (rf))
         ([acc] (rf acc))
-        ([acc {:http/keys [req]
+        ([acc {:http/keys [req host port]
                :nio/keys [selection-key]
                :ssl/keys [^SSLEngine engine]
                {:keys [reserve commit block decommit] :as bip} :nio/out
@@ -596,9 +598,10 @@
                      (.flip dst)
                      (commit dst)
                      (let [written (nio/datagram-send! x)]
-                       (prn ::written written)
+                       (prn ::written written host port)
                        (if-not (> written 0)
                          (do
+                           (prn ::socket :full host port)
                            ;; socket buffer full so waiting to clear
                            #_(nio/writable! selection-key)
                            acc)

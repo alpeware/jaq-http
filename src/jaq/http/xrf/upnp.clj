@@ -181,6 +181,7 @@
      nio/close-connection))))
 
 #_(
+   *ns*
    (require 'jaq.http.xrf.upnp :reload)
    (in-ns 'jaq.http.xrf.upnp)
    *e
@@ -384,6 +385,7 @@
         (mapcat (fn [{:keys [service actions state]}]
                   (->> actions (filter (fn [{:keys [name]}] (= name "GetExternalIPAddress")))))))
 
+   *e
    ;; SOAP request body
    (let [service (->> services (filter (fn [{:keys [serviceType]}]
                                          (string/includes? serviceType "WANIP")))
@@ -394,15 +396,21 @@
          ;; use to delete
          #_{:NewRemoteHost "" :NewProtocol "UDP"
             :NewExternalPort "60000"}
-         #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "8080"
-            :NewInternalClient "192.168.1.140" :NewInternalPort "8080"
+         ;; dev repl
+         #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "80"
+            :NewInternalClient "192.168.1.244" :NewInternalPort "3002"
             :NewEnabled "1" :NewPortMappingDescription "alpeware"
-            :NewLeaseDuration "0"}
+          :NewLeaseDuration "0"}
+         ;; dev node
+         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60001"
+          :NewInternalClient "192.168.1.244" :NewInternalPort "60001"
+          :NewEnabled "1" :NewPortMappingDescription "frontpageping"
+          :NewLeaseDuration "0"}
          ;; pi
-         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
+         #_{:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
             :NewInternalClient "192.168.1.216" :NewInternalPort "60000"
-            :NewEnabled "1" :NewPortMappingDescription "datachannel"
-            :NewLeaseDuration "0"}
+            :NewEnabled "1" :NewPortMappingDescription "frontpageping"
+          :NewLeaseDuration "0"}
          soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
                                                     :SOAP-ENV:encodingStyle "http://schemas.xmlsoap.org/soap/encoding/"}
                     :content [{:tag :SOAP-ENV:Body
