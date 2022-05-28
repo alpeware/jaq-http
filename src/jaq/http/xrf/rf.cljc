@@ -613,7 +613,7 @@
                     ;; TODO: remove support for type
                     (doseq [t types #_(if type [type] types)]
                       (prn ::register t @channel)
-                      (register! selector
+                       (register! selector
                                  target
                                  t
                                  (-> x
@@ -718,7 +718,7 @@
                                      :context/rf xrf
                                      :context/x x)))
                    (vreset! deferred))
-              (.setTimeout js/window @deferred timeout))
+              (.setTimeout js/self @deferred timeout))
             (->> (assoc x :async/deferred @deferred)
                  (rf acc))))))))
 

@@ -12,6 +12,7 @@
      :clj
      (:import
       [java.nio ByteBuffer]
+      [java.nio.charset StandardCharsets]
       [java.security.spec RSAPublicKeySpec]
       [java.security KeyFactory PublicKey Signature SecureRandom MessageDigest]
       [java.util UUID Base64])))
@@ -318,10 +319,10 @@
 #?(:clj
    (defn sha256 [s]
      (let [md (MessageDigest/getInstance "SHA-256")]
-       (->> s
-            (.getBytes)
+       #_(->> (.getBytes s StandardCharsets/UTF_8)
             (.update md))
-       (->> (.digest md)
+       (->> (.getBytes s StandardCharsets/UTF_8)
+            (.digest md)
             (map byte)
             (map (fn [x] (bit-and x 0xff)))
             (map (fn [x] (Integer/toHexString x)))
@@ -337,6 +338,7 @@
 
 #_(
    (in-ns 'jaq.http.xrf.crypto)
+   *e
 
    (let [md (MessageDigest/getInstance "SHA-256")
          ;;s "foo@bar.com"
@@ -352,5 +354,18 @@
           (map (fn [x] (if (< (count x) 2) (str "0" x) x)))
           (map (fn [x] (string/upper-case x)))
           (into [])))
+
+   (let [s (slurp "out/fpp/browser.js")]
+     (sha256 s)
+     #_(count s))
+
+   (->> [{:crypto/s "test"}]
+        (into [] (comp
+                  sha256-rf
+                  (map (fn [{:crypto/keys [sha256] :as x}]
+                         (prn sha256)
+                         x))
+                  (drop-while (fn [_] true)))))
+   :foo
 
    )

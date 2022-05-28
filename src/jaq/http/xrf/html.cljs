@@ -47,8 +47,12 @@
 
    )
 
-(def text-node (.-TEXT_NODE js/Node))
-(def element-node (.-ELEMENT_NODE js/Node))
+(def text-node (try
+                 (some-> js/Node .-TEXT_NODE)
+                 (catch :default e nil)))
+(def element-node (try
+                    (some-> js/Node .-ELEMENT_NODE)
+                    (catch :default e nil)))
 
 ;; go from DOM to hiccup
 ;; some inspiration from https://gist.github.com/dpp/72e6afd1e4cf73d05565
