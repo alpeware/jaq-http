@@ -5,7 +5,6 @@
   org.clojure/data.json {:mvn/version "0.2.7"},
   com.alpeware/jaq-repl
   {:git/url "https://github.com/alpeware/jaq-repl",
-   :tag "HEAD",
    :sha "a01f8db75944d8066865f482b2b1383090ed78e7"},
   net.cgrand/xforms
   {:mvn/version "0.19.2", :exclusions [org.clojure/clojurescript org.clojure/clojure]}},
