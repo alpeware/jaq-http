@@ -182,7 +182,8 @@
 
 #_(
    *ns*
-   (require 'jaq.http.xrf.upnp :reload)
+   (in-ns 'clojure.core)
+   (require 'jaq.http.xrf.upnp)
    (in-ns 'jaq.http.xrf.upnp)
    *e
    ;; uPnP
@@ -391,24 +392,34 @@
                                          (string/includes? serviceType "WANIP")))
                       (first))
          service-type (:serviceType service)
-         action #_"GetExternalIPAddress" "AddPortMapping" #_"DeletePortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry"
+         action #_"GetExternalIPAddress" "AddPortMapping" #_"DeletePortMapping" #_"GetSpecificPortMappingEntry" #_"GetGenericPortMappingEntry" #_"GetListOfPortMappings"
          args #_{} #_{:NewPortMappingIndex "0"}
+         ;; list of mappings
+         #_{:NewManage "1" :NewStartPort "0" :NewEndPort "100" :NewProtocol "TCP"
+          :NewNumberOfPorts "0"}
          ;; use to delete
          #_{:NewRemoteHost "" :NewProtocol "UDP"
-            :NewExternalPort "60000"}
+            :NewExternalPort "80"}
+         #_{:NewRemoteHost "" :NewProtocol "TCP"
+          :NewExternalPort "80"}
          ;; dev repl
          #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "80"
-            :NewInternalClient "192.168.1.244" :NewInternalPort "3002"
-            :NewEnabled "1" :NewPortMappingDescription "alpeware"
-          :NewLeaseDuration "0"}
+          :NewInternalClient "192.168.1.249" :NewInternalPort "3000"
+          :NewEnabled "1" :NewPortMappingDescription "alpeware"
+            :NewLeaseDuration "0"}
+         ;; fpp server pi
+         #_{:NewRemoteHost "" :NewProtocol "TCP" :NewExternalPort "80"
+            :NewInternalClient "192.168.86.51" :NewInternalPort "3000" #_"8000"
+          :NewEnabled "1" :NewPortMappingDescription "fpp-server"
+            :NewLeaseDuration "0"}
          ;; dev node
-         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60001"
-          :NewInternalClient "192.168.1.244" :NewInternalPort "60001"
+         #_{:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60001"
+          :NewInternalClient "192.168.1.7" :NewInternalPort "60001"
           :NewEnabled "1" :NewPortMappingDescription "frontpageping"
           :NewLeaseDuration "0"}
          ;; pi
-         #_{:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
-            :NewInternalClient "192.168.1.216" :NewInternalPort "60000"
+         {:NewRemoteHost "" :NewProtocol "UDP" :NewExternalPort "60000"
+            :NewInternalClient "192.168.86.51" :NewInternalPort "60000"
             :NewEnabled "1" :NewPortMappingDescription "frontpageping"
           :NewLeaseDuration "0"}
          soap (->> {:tag :SOAP-ENV:Envelope :attrs {:xmlns:SOAP-ENV "http://schemas.xmlsoap.org/soap/envelope"
@@ -478,6 +489,7 @@
    (in-ns 'jaq.http.xrf.upnp)
    (-> y :headers)
 
+   *ns*
    x
    *e
 

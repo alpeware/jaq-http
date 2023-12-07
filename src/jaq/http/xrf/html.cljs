@@ -144,7 +144,8 @@
          (comp (map (fn [x]
                       (assoc x
                              :event/target (query [:#connection])
-                             :dom/hiccup [:div [:p "foo" [:strong " bar "] "baz"]])))
+                             :dom/hiccup [:div.loader
+                                          [:p "Connecting..."]])))
                render-rf)
          [{}])
 
@@ -161,9 +162,9 @@
      #_(get-in hiccup [3 1])
      (update-in hiccup [3 1] update :value str "foo")
      #_(-> m
-         (assoc :value (str value ".com"))
-         (->> (concat [:input])
-              (concat v)))
+           (assoc :value (str value ".com"))
+           (->> (concat [:input])
+                (concat v)))
      #_v
      #_hiccup)
 
@@ -180,11 +181,13 @@
           render-rf)
          [{}])
 
+
+
    (let [v [:foo {:bar :baz}]]
      (-> v
-      (get 1)
-      (assoc :bar :bazz)
-      (->> (conj [(first v)]))))
+         (get 1)
+         (assoc :bar :bazz)
+         (->> (conj [(first v)]))))
 
    )
 

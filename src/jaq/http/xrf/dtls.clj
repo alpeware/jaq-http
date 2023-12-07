@@ -299,9 +299,11 @@
 
                 ;; ssl engine re-ordered packets
                 :need-unwrap-again
-                (let [result (try
+                (let [^ByteBuffer bb (block)
+                      result (try
                                (-> engine
-                                   (.unwrap empty-buffer empty-buffer)
+                                   #_(.unwrap empty-buffer empty-buffer)
+                                   (.unwrap bb empty-buffer)
                                    (result?))
                                (catch SSLException e
                                  (prn ::unwrap e)
@@ -315,11 +317,12 @@
                     (throw (SSLException. "close"))
                     :ok
                     (do
+                      (decommit bb)
                       #_(.interestOps sk SelectionKey/OP_READ)
                       (handshake? engine))))
                 :waiting-for-input
                 :noop)]
-     #_(prn ::step step)
+     (prn ::step ::client (-> engine .getUseClientMode) step empty-buffer)
      (let []
        #_(if-not (contains?  #{:need-task :need-wrap :need-unwrap} step)
          step
@@ -332,6 +335,7 @@
 #_(
    (in-ns 'jaq.http.xrf.dtls)
    *e
+   (.clear empty-buffer)
    (= 1248 (+ 25 763 354 106))
    )
 
@@ -355,13 +359,13 @@
     (let [kms (.getKeyManagers kmf)
           km (aget kms 0)
           sskm (proxy [X509ExtendedKeyManager] []
-                 (chooseEngineClientAlias [key-type issuers engine]
-                   (throw (Exception. "foo"))
-                   #_(prn ::km ::client key-type issuers engine)
-                   (when (= key-type "RSA")
-                     (if (.getUseClientMode engine)
-                       "client"
-                       "server")))
+                 (chooseEngineClientAlias [key-types issuers engine]
+                   (let [types (->> key-types (set))]
+                     #_(prn ::km :client types issuers #_engine)
+                     (when (contains? types "RSA")
+                       (if (.getUseClientMode engine)
+                         "client"
+                         "server"))))
                  (chooseEngineServerAlias [key-type issuers engine]
                    #_(prn ::km ::server key-type issuers engine)
                    (when (= key-type "RSA")
@@ -400,6 +404,7 @@
 #_(
    (in-ns 'jaq.http.xrf.dtls)
    *e
+   (->> k (set))
    (let [kms (trust (context) [])]
      (seq kms))
    (let [km (trust (context) [])]
@@ -441,7 +446,8 @@
 (defn ^SSLEngine client-mode [^SSLEngine engine client-mode]
   (doto engine
     (.setUseClientMode client-mode)
-    (.setWantClientAuth true)))
+    #_(.setWantClientAuth true)
+    (.setNeedClientAuth true)))
 
 ;; aka encode: plain src -> encoded dst
 (defn wrap! [^SSLEngine engine ^ByteBuffer src ^ByteBuffer dst]
@@ -454,6 +460,8 @@
 (defn configure [^SSLEngine engine packet-size]
   (let [params (.getSSLParameters engine)]
     (.setMaximumPacketSize params packet-size)
+    ;; causes duplicate handshake
+    (.setEnableRetransmissions params false)
     (.setSSLParameters engine params)
     engine))
 
@@ -476,7 +484,8 @@
              (let [engine (or engine
                               (-> (context) (trust certs) (ssl-engine) (client-mode mode) (configure packet-size)))]
                (->> engine (vreset! eng)))
-             (.beginHandshake @eng)
+             (when-not mode
+               (.beginHandshake @eng))
              (when mode ;; client mode
                (let [dst (reserve)]
                  #_(.beginHandshake @eng)
@@ -489,6 +498,9 @@
 
 #_(
    (in-ns 'jaq.http.xrf.dtls)
+
+   k
+   (contains? #{"RSA"} (->> k (into [])))
    *e
 
    (let [cert [{:alias "server" :cert (self-cert {})} {:alias "client" :cert (self-cert {})}]
@@ -523,23 +535,42 @@
         ([acc {:http/keys [host]
                :nio/keys [attachment ^SelectionKey selection-key]
                :ssl/keys [engine]
-               {:keys [reserve commit block decommit] :as bip} :nio/out
+               {:keys [] block-out :block :as bip} :nio/out
+               {:keys [reserve commit decommit] block-in :block} :nio/in
                :as x}]
-         (let [hs (-> engine (handshake?))]
-           #_(prn ::handshake hs)
-           (if-not (contains? #{:finished :not-handshaking} hs)
-             (do
-               ;; TODO: skip if out buffer is still full
-               (if (-> (block) (.hasRemaining))
-                 #_(prn ::written ::hs (nio/datagram-send! x))
-                 (nio/datagram-send! x)
-                 (handshake! engine x))
-               acc)
-             (do
-               (when-not @status
-                 #_(prn ::handshake hs)
-                 (vreset! status hs))
-               (rf acc x)))))))))
+         (if-not @status
+           (let [hs (-> engine (handshake?))]
+             (prn ::handshake hs)
+             (if-not (contains? #{:finished :not-handshaking} hs)
+               (do
+                 ;; TODO: skip if out buffer is still full
+                 (if (-> (block-out) (.hasRemaining))
+                   #_(prn ::written ::hs (nio/datagram-send! x))
+                   (nio/datagram-send! x)
+                   (handshake! engine x))
+                 acc)
+               (do
+                 (def y x)
+                 (let [bb (block-in)]
+                   (-> bb (.position (.limit bb)) (decommit)))
+                 #_(when (and (not @status)
+                              (-> (block) (.hasRemaining)))
+                     (nio/datagram-send! x))
+                 (when-not @status
+                   #_(prn ::handshake hs)
+                   (vreset! status hs))
+                 (rf acc x))))
+           (rf acc x)))))))
+
+#_(
+   (->> y (keys))
+   (let [{{:keys [reserve commit decommit] block-in :block} :nio/in} y
+         {{:keys [] block-out :block :as bip} :nio/out} y]
+     (block-out))
+
+   empty-buffer
+
+   )
 
 (defn request-ssl-rf [xf]
   (fn [rf]

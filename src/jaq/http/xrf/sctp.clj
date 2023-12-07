@@ -353,6 +353,9 @@
                                (doall))]
                (run! (fn [_] (.get buf)) (range param-padding))
                (assoc x :sctp/cookie cookie)))
+   :cookie-ack (fn [{:sctp/keys [param-length param-padding buf] :as x}]
+                 (let []
+                   x))
    :hostname (fn [{:sctp/keys [param-length param-padding buf] :as x}]
                (let [hostname (->> (range)
                                    (take param-length)
@@ -441,7 +444,7 @@
         padding (-> length (mod -4) -)
         k (get parameter-map type :unknown)
         f (get decode-opt-map k)]
-    #_(prn ::processing ::opt type k length padding buf)
+    (prn ::processing ::opt type k length padding buf)
     (->> (assoc x
                 :sctp/param-type type
                 :sctp/param-length (- length 4) ;; length includes type and length
@@ -452,7 +455,7 @@
   [{:sctp/keys [buf chunk-type chunk-length] :as x}]
   (let [k (get chunk-map chunk-type)
         f (get decode-chunk-map k)]
-    #_(prn ::processing k chunk-length)
+    (prn ::processing k chunk-length)
     (->> (assoc x :sctp/chunk k)
          (f))))
 
@@ -518,9 +521,11 @@
 (defn decode-message [{:sctp/keys [data protocol] :as x}]
   (let [buf (->> data (byte-array) (ByteBuffer/wrap))
         f (get decode-protocol-map protocol)]
-    #_(prn ::protocol protocol)
-    (->> (assoc x :sctp/buf buf)
-         (f))))
+    (prn ::protocol protocol)
+    (if f
+      (->> (assoc x :sctp/buf buf)
+           (f))
+      (assoc x :sctp/buf buf))))
 
 #_(
 
@@ -674,17 +679,24 @@
                        (assoc x :sctp/buf)
                        (decode-chunk)
                        (vreset! val))
-                  #_(prn ::chunk ::header @val)
+                  (prn ::chunk ::header @vacc (select-keys @val [:sctp/chunk-type
+                                                                 :sctp/chunk-flags
+                                                                 :sctp/chunk-length
+                                                                 :sctp/chunk-padding]))
                   (rf acc (assoc-fn x)))))
 
             :else
             (rf acc (assoc-fn x)))))))
-   (drop 1)
+   (rf/branch
+    (fn [{:sctp/keys [chunk-length]}] (zero? chunk-length))
+    rf/identity-rf
+    (drop 1))
    (fn [rf]
      (let [val (volatile! nil)
            vacc (volatile! [])
            assoc-fn (fn [x]
-                      (assoc x :sctp/buf @val
+                      (assoc x
+                             :sctp/buf @val
                              :context/vacc @vacc))]
        (fn
          ([] (rf))
@@ -692,6 +704,7 @@
          ([acc {:keys [byte]
                 :sctp/keys [chunk-length chunk-padding]
                 :as x}]
+          #_(prn :chunk byte)
           (cond
             (< (count @vacc) chunk-length)
             (do
@@ -705,6 +718,14 @@
                        (ByteBuffer/wrap)
                        (vreset! val))
                   (rf acc (assoc-fn x)))))
+
+            (zero? chunk-length)
+            (do
+              (->> @vacc
+                   (byte-array)
+                   (ByteBuffer/wrap)
+                   (vreset! val))
+              (rf acc (assoc-fn x)))
 
             :else
             (rf acc (assoc-fn x)))))))))
@@ -733,32 +754,34 @@
   (fn [rf]
     (let [chunks (volatile! [])
           done (volatile! false)
-          xf (rf/repeatedly-rf (comp chunk-rf
-                                     #_(drop 1)
-                                     (rf/one-rf :sctp/chunk
-                                                (comp
-                                                 (map (fn [{:context/keys [remaining]
-                                                            :sctp/keys [chunk-padding]
-                                                            :as x}]
-                                                        #_(prn ::processed ::chunk remaining chunk-padding)
-                                                        x))
-                                                 (map (fn [{:sctp/keys [buf] :as x}]
-                                                        (loop [x' (->> x (decode-params))]
-                                                          #_(prn buf)
-                                                          (if-not (.hasRemaining buf)
-                                                            x'
-                                                            (recur (decode-opt-params x'))))))
-                                                 (map (fn [{:sctp/keys [chunk] :as x}]
-                                                        (if (= chunk :data)
-                                                          (decode-message x)
-                                                          x)))))
-                                     padding-rf
-                                     (map (fn [{:context/keys [remaining]
-                                                :sctp/keys [chunk-padding]
-                                                :as x}]
-                                            #_(prn ::done ::chunk remaining chunk-padding)
-                                            (vswap! chunks conj x)
-                                            x))))
+          xf (rf/repeatedly-rf (comp
+                                chunk-rf
+                                #_(drop 1)
+                                (rf/assoc-rf :sctp/chunk
+                                             (comp
+                                              (map (fn [{:context/keys [remaining]
+                                                         :sctp/keys [buf chunk-padding]
+                                                         :as x}]
+                                                     #_(prn ::processed ::chunk remaining chunk-padding)
+                                                     #_(prn ::chunks-rf :buf buf)
+                                                     x))
+                                              (map (fn [{:sctp/keys [buf] :as x}]
+                                                     (loop [x' (->> x (decode-params))]
+                                                       #_(prn ::chunks-rf :buf buf)
+                                                       (if-not (.hasRemaining buf)
+                                                         x'
+                                                         (recur (decode-opt-params x'))))))
+                                              (map (fn [{:sctp/keys [chunk] :as x}]
+                                                     (if (= chunk :data)
+                                                       (decode-message x)
+                                                       x)))))
+                                padding-rf
+                                (map (fn [{:context/keys [remaining]
+                                           :sctp/keys [chunk-padding]
+                                           :as x}]
+                                       #_(prn ::done ::chunk remaining chunk-padding)
+                                       (vswap! chunks conj x)
+                                       x))))
           xrf (xf (rf/result-fn))
           assoc-fn (fn [x]
                      (assoc x :sctp/chunks @chunks))]
@@ -773,9 +796,10 @@
                 (rf acc))
            (do
              (xrf acc x)
+             #_(prn ::chunks remaining byte)
              (if (= 0 remaining)
                (do
-                 #_(prn ::done ::chunks remaining)
+                 (prn ::done ::chunks remaining)
                  (vreset! done true)
                  (->> (assoc-fn x)
                       (rf acc)))
@@ -957,6 +981,19 @@
                  ;; opt param
                  (opt-param! buf :cookie (count cookie) cookie true)
                  (opt-param! buf :forward-tsn 0 nil false)))
+   :init (fn [{:sctp/keys [buf chunk init-tag window outbound inbound cookie initial-tsn]
+               :as x}]
+           (let [cookie (or cookie (-> (random-int) (biginteger) (.toByteArray)))]
+             ;; fixed params
+             (-> buf
+                 (.putInt init-tag)
+                 (.putInt window)
+                 (.putShort outbound)
+                 (.putShort inbound)
+                 (.putInt initial-tsn))
+             ;; opt param
+             (opt-param! buf :cookie (count cookie) cookie true)
+             (opt-param! buf :forward-tsn 0 nil false)))
    :cookie-echo (fn [{:sctp/keys [buf cookie] :as x}]
                   (let [cookie (or cookie (-> (random-int) (biginteger) (.toByteArray)))]
                     ;; fixed params
@@ -1064,7 +1101,7 @@
   (doseq [{:keys [chunk chunk-flags]} chunks]
     (let [pos (.position buf)
           bb (.duplicate buf)]
-      #_(prn ::encoding chunk chunk-flags)
+      (prn ::encoding chunk chunk-flags)
       (->> (assoc x
                   :sctp/buf bb
                   :sctp/chunk-flags chunk-flags

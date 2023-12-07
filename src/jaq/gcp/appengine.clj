@@ -205,7 +205,7 @@
 (def entrypoint
   {:shell (->> ["java"
                 #_"-agentpath:/opt/cprof/profiler_java_agent.so=-logtostderr,-cprof_heap_sampling_interval=262144"
-                "-cp classes:clojure-1.10.1.jar:spec.alpha-0.2.176.jar:core.specs.alpha-0.2.44.jar:asm-all-4.2.jar"
+                "-cp classes:clojure-1.10.1.jar:spec.alpha-0.2.176.jar:core.specs.alpha-0.2.44.jar:asm-all-4.2.jar:fressian-0.6.6.jar:fress-0.3.1.jar"
                 #_"jaq.http.server"
                 "fpp.server"]
                (string/join " "))})

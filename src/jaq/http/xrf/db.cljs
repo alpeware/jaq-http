@@ -106,12 +106,13 @@
   (comp
    get-rf
    (rf/choose-rf (fn [{:db/keys [value] :as x}]
-                   (some? value))
-                 {false (comp
+                   (prn ::gupsert value)
+                   (-> (nil? value) (str) (keyword)))
+                 {:true (comp
                          (map (fn [{:db/keys [default] :as x}]
                                 (assoc x :db/value default)))
                          put-rf)
-                  true (comp
+                  :false (comp
                         (map (fn [{:db/keys [value] :as x}]
                                x
                                #_(assoc x :db/value (-> value

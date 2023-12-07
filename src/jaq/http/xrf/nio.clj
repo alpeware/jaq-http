@@ -94,11 +94,18 @@
 (defn ^SelectionKey listen! [^Selector selector attachment ^ServerSocketChannel server-channel]
   (.register server-channel selector SelectionKey/OP_ACCEPT attachment))
 
+(defn ^SelectionKey connectable [^Selector selector ^SocketChannel channel attachment]
+  (.register channel selector SelectionKey/OP_CONNECT attachment))
+
 (defn ^SelectionKey readable [^Selector selector ^SocketChannel channel attachment]
   (.register channel selector SelectionKey/OP_READ attachment))
 
 (defn ^SelectionKey writable [^Selector selector ^SocketChannel channel attachment]
   (.register channel selector SelectionKey/OP_WRITE attachment))
+
+(defn ^SelectionKey connectable! [^SelectionKey selection-key]
+  (when (.isValid selection-key)
+    (.interestOps selection-key SelectionKey/OP_CONNECT)))
 
 (defn ^SelectionKey readable! [^SelectionKey selection-key]
   (when (.isValid selection-key)
@@ -111,6 +118,10 @@
 (defn ^SelectionKey read-writable! [^SelectionKey selection-key]
   (when (.isValid selection-key)
     (.interestOps selection-key (bit-or SelectionKey/OP_WRITE SelectionKey/OP_READ))))
+
+(defn ^SelectionKey read-connectable! [^SelectionKey selection-key]
+  (when (.isValid selection-key)
+    (.interestOps selection-key (bit-or SelectionKey/OP_CONNECT SelectionKey/OP_READ))))
 
 (defn wakeup! [selection-keys]
   (->> selection-keys
@@ -158,7 +169,8 @@
         (do
           #_(prn ::eos selection-key)
           (.interestOps selection-key 0)
-          (.cancel selection-key))
+          (.cancel selection-key)
+          (.close channel))
 
         (> n 0) ;; read some bytes
         (do
@@ -232,9 +244,17 @@
           (catch IOException ex
             #_(prn ::eos selection-key)
             (.interestOps selection-key 0)
-            (.cancel selection-key)))
+            (.cancel selection-key)
+            (.close channel)))
         #_(prn ::wrote (.position bb)))
       (.position bb))))
+
+(defn close! [{:nio/keys [^SelectionKey selection-key]
+               :as x}]
+  (let [^ByteChannel channel (.channel selection-key)]
+    (-> selection-key (.attach nil))
+    (.cancel selection-key)
+    (.close channel)))
 
 (def readable-rf
   (fn [rf]
@@ -601,6 +621,8 @@
       ([acc] (rf acc))
       ([acc {:nio/keys [^SelectionKey selection-key] :as x}]
        (when-not (.isValid selection-key)
+         (prn ::invalid :channel)
+         (close! x)
          (.cancel selection-key))
        (rf acc x)))))
 
@@ -652,6 +674,7 @@
                      :nio/selection-key ^SelectionKey @selection-key)
               (rf acc)))))))
 
+;; server socket?
 (defn datagram-channel-rf [xf]
   (fn [rf]
     (let [channel (volatile! nil)
@@ -800,12 +823,15 @@
                                                                                            bip/bip-rf
                                                                                            (map :context/bip))) (first)))
                                              :context/rf (xf (rf/result-fn))))
-                           (readable!))]
-           (-> sk
-               ;; TODO: fix
-               (.attachment)
-               (assoc-in [:context/x :nio/selection-key] sk)
-               (->> (.attach sk)))))
+                           #_(readable!)
+                           #_(read-connectable!))]
+           (prn ::connection sk)
+           #_(prn ::connectable (some-> sk (.isConnectable)))
+           (some-> sk
+                   ;; TODO: fix
+                   (.attachment)
+                   (assoc-in [:context/x :nio/selection-key] sk)
+                   (->> (.attach sk)))))
        (rf acc x)))))
 
 (defn bind-rf [xf]
@@ -922,6 +948,17 @@
              (.cancel sk)))
          (.close selector)
          (rf acc (assoc x :context/results @results)))))))
+
+(def close-channel-rf
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([acc] (rf acc))
+      ([acc {:nio/keys [selector]
+             :as x}]
+       (prn ::closing :channel)
+       (close! x)
+       (rf acc x)))))
 
 (defn thread-rf [xf]
   (fn [rf]

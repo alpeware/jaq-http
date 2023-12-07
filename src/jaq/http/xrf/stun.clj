@@ -269,29 +269,29 @@
                     ;; add crc
                     ;; TODO: clean up
                     (->> crc32
-                        (.getValue)
-                        (bit-xor 0x5354554e)
-                        (bit-and 0xffffffff)
-                        (biginteger)
-                        (.toByteArray)
-                        (seq)
-                        (concat [0 0 0 0])
-                        (reverse)
-                        (take 4)
-                        (reverse)
-                        (map (fn [e] (bit-and e 0xff)))
-                        #_((fn [e] (prn ::crc e (count e)) e))
-                        (byte-array)
-                        (.put buf))
+                         (.getValue)
+                         (bit-xor 0x5354554e)
+                         (bit-and 0xffffffff)
+                         (biginteger)
+                         (.toByteArray)
+                         (seq)
+                         (concat [0 0 0 0])
+                         (reverse)
+                         (take 4)
+                         (reverse)
+                         (map (fn [e] (bit-and e 0xff)))
+                         #_((fn [e] (prn ::crc e (count e)) e))
+                         (byte-array)
+                         (.put buf))
                     #_(doseq [[x y] (-> crc32
-                                      (.getValue)
-                                      (biginteger)
-                                      (.toByteArray)
-                                      (interleave xor-bytes)
-                                      (->> (partition 2)))]
-                      (->> (bit-xor x y)
-                           (unchecked-byte)
-                           (.put buf)))
+                                        (.getValue)
+                                        (biginteger)
+                                        (.toByteArray)
+                                        (interleave xor-bytes)
+                                        (->> (partition 2)))]
+                        (->> (bit-xor x y)
+                             (unchecked-byte)
+                             (.put buf)))
                     buf))})
 
 #_(
@@ -1218,10 +1218,6 @@
                 (comp
                  (nio/select-rf
                   (comp
-                   (map (fn [x]
-                          (assoc x
-                                 :http/host "stun.3cx.com"
-                                 :http/port 3478)))
                    (nio/datagram-channel-rf
                     (comp
                      nio/datagram-read-rf
@@ -1234,166 +1230,103 @@
                      #_(rf/debug-rf ::start)
                      nio/datagram-write-rf
                      #_(rf/debug-rf ::start)
-                     (map (fn [x]
-                            (assoc x
-                                   :http/host "stun.3cx.com"
-                                   :http/port 3478)))
-                     (nio/datagram-send-rf
-                      (comp
-                       (map (fn [{:stun/keys [buf] :as x}]
-                              (assoc x
-                                     :stun/buf (-> buf (.clear))
-                                     :stun/message :request
-                                     :stun/id (transaction-id)
-                                     :stun/attributes [])))
-                       (map
-                        (fn [{:http/keys [host port] :as x}]
-                          (assoc x :http/req [(encode x)])))))
                      (comp
-                      decode-rf
-                      (rf/once-rf (fn [{:context/keys [stuns]
-                                        :http/keys [host port]
-                                        :stun/keys [ip port]
-                                        :as x}]
-                                    (vswap! stuns conj {:ip ip :port port :host host})
-                                    x)))
-                     (map (fn [x]
-                            (assoc x
-                                   :http/host "stun.t-online.de"
-                                   :http/port 3478)))
-                     (nio/datagram-send-rf
+                      (map (fn [x]
+                             (assoc x
+                                    :http/host "stun.t-online.de"
+                                    :http/port 3478)))
+                      (nio/datagram-send-rf
+                       (comp
+                        (map (fn [{:stun/keys [buf] :as x}]
+                               (assoc x
+                                      :stun/buf (-> buf (.clear))
+                                      :stun/message :request
+                                      :stun/id (transaction-id)
+                                      :stun/attributes [])))
+                        (map
+                         (fn [{:http/keys [host port] :as x}]
+                           (assoc x :http/req [(encode x)])))))
                       (comp
-                       (map (fn [{:stun/keys [buf] :as x}]
-                              (assoc x
-                                     :stun/buf (-> buf (.clear))
-                                     :stun/message :request
-                                     :stun/id (transaction-id)
-                                     :stun/attributes [])))
-                       (map
-                        (fn [{:http/keys [host port] :as x}]
-                          (assoc x :http/req [(encode x)])))))
-                     (comp
-                      decode-rf
-                      (rf/once-rf (fn [{:context/keys [stuns]
-                                        :http/keys [host port]
-                                        :stun/keys [ip port]
-                                        :as x}]
-                                    (vswap! stuns conj {:ip ip :port port :host host})
-                                    x)))
-                     (map (fn [x]
-                            (assoc x
-                                   :http/host "stun.solnet.ch"
-                                   :http/port 3478)))
-                     (nio/datagram-send-rf
+                       decode-rf
+                       (rf/once-rf (fn [{:context/keys [stuns]
+                                         :http/keys [host port]
+                                         :stun/keys [ip port]
+                                         :as x}]
+                                     (vswap! stuns conj {:ip ip :port port :host host})
+                                     x)))
                       (comp
-                       (map (fn [{:stun/keys [buf] :as x}]
+                       (map (fn [x]
                               (assoc x
-                                     :stun/buf (-> buf (.clear))
-                                     :stun/message :request
-                                     :stun/id (transaction-id)
-                                     :stun/attributes [])))
-                       (map
-                        (fn [{:http/keys [host port] :as x}]
-                          (assoc x :http/req [(encode x)])))))
-                     (comp
-                      decode-rf
-                      (rf/once-rf (fn [{:context/keys [stuns]
-                                        :http/keys [host port]
-                                        :stun/keys [ip port]
-                                        :as x}]
-                                    (vswap! stuns conj {:ip ip :port port :host host})
-                                    x)))
-                     (map (fn [x]
-                            (assoc x
-                                   ;;:http/host "107.178.230.56"
-                                   ;;:http/host "35.206.112.7"
-                                   :http/port 60000
-                                   :http/host "136.49.153.220"
-                                   ;;:http/port 46584
-                                   )))
-                     (nio/datagram-send-rf
+                                     :http/host "stun.solnet.ch"
+                                     :http/port 3478)))
+                       (nio/datagram-send-rf
+                        (comp
+                         (map (fn [{:stun/keys [buf] :as x}]
+                                (assoc x
+                                       :stun/buf (-> buf (.clear))
+                                       :stun/message :request
+                                       :stun/id (transaction-id)
+                                       :stun/attributes [])))
+                         (map
+                          (fn [{:http/keys [host port] :as x}]
+                            (assoc x :http/req [(encode x)])))))
+                       (comp
+                        decode-rf
+                        (rf/once-rf (fn [{:context/keys [stuns]
+                                          :http/keys [host port]
+                                          :stun/keys [ip port]
+                                          :as x}]
+                                      (vswap! stuns conj {:ip ip :port port :host host})
+                                      x)))))
+                     #_(comp
+                       (map (fn [x]
+                              (assoc x
+                                     :http/host "stun.l.google.com"
+                                     :http/port 19302)))
+                       (nio/datagram-send-rf
+                        (comp
+                         (map (fn [{:stun/keys [buf] :as x}]
+                                (assoc x
+                                       :stun/buf (-> buf (.clear))
+                                       :stun/message :request
+                                       :stun/id (transaction-id)
+                                       :stun/attributes [])))
+                         (map
+                          (fn [{:http/keys [host port] :as x}]
+                            (assoc x :http/req [(encode x)])))))
+                       (comp
+                        decode-rf
+                        (rf/once-rf (fn [{:context/keys [stuns]
+                                          :http/keys [host port]
+                                          :stun/keys [ip port]
+                                          :as x}]
+                                      (vswap! stuns conj {:ip ip :port port :host host})
+                                      x))))
+                     #_(comp
+                      (map (fn [x]
+                             (assoc x
+                                    :http/host "136.49.158.9"
+                                    :http/port 60001)))
+                      (nio/datagram-send-rf
+                       (comp
+                        (map (fn [{:stun/keys [buf] :as x}]
+                               (assoc x
+                                      :stun/buf (-> buf (.clear))
+                                      :stun/message :request
+                                      :stun/id (transaction-id)
+                                      :stun/attributes [])))
+                        (map
+                         (fn [{:http/keys [host port] :as x}]
+                           (assoc x :http/req [(encode x)])))))
+                      #_(rf/debug-rf ::waiting)
                       (comp
-                       (map (fn [{:stun/keys [buf] :as x}]
-                              (assoc x
-                                     :stun/buf (-> buf (.clear))
-                                     :stun/message :request
-                                     :stun/id (transaction-id)
-                                     :stun/attributes [])))
-                       (map
-                        (fn [{:http/keys [host port] :as x}]
-                          (assoc x :http/req [(encode x)])))))
-                     #_(rf/debug-rf ::waiting)
-                     (comp
-                      decode-rf
-                      (rf/once-rf (fn [{:context/keys [stuns]
-                                        :http/keys [host port]
-                                        :stun/keys [ip port]
-                                        :as x}]
-                                    (vswap! stuns conj {:ip ip :port port :host host})
-                                    x)))
-                     (map (fn [x]
-                            (assoc x
-                                   ;;:http/host "107.178.230.56"
-                                   :http/host "35.206.112.7"
-                                   ;;:http/port 60000
-                                   ;;:http/host "136.49.153.220"
-                                   :http/port #_3389 3478
-                                   )))
-                     (nio/datagram-send-rf
-                      (comp
-                       (map (fn [{:stun/keys [buf] :as x}]
-                              (assoc x
-                                     :stun/buf (-> buf (.clear))
-                                     :stun/message :request
-                                     :stun/id (transaction-id)
-                                     :stun/attributes [])))
-                       (map
-                        (fn [{:http/keys [host port] :as x}]
-                          (assoc x :http/req [(encode x)])))))
-                     (comp
-                      decode-rf
-                      (rf/once-rf (fn [{:context/keys [stuns]
-                                        :http/keys [host port]
-                                        :stun/keys [ip port]
-                                        :as x}]
-                                    (vswap! stuns conj {:ip ip :port port :host host})
-                                    x)))
-                     (map (fn [x]
-                            (assoc x
-                                   ;;:http/host "107.178.230.56"
-                                   :http/host "35.206.112.7"
-                                   ;;:http/port 60000
-                                   ;;:http/host "136.49.153.220"
-                                   :http/port 10000 #_3478
-                                   )))
-                     (nio/datagram-send-rf
-                      (comp
-                       (map (fn [{:stun/keys [buf] :as x}]
-                              (assoc x
-                                     :stun/buf (-> buf (.clear))
-                                     :stun/message :request
-                                     :stun/id (transaction-id)
-                                     :stun/attributes [])))
-                       (map
-                        (fn [{:http/keys [host port] :as x}]
-                          (assoc x :http/req [(encode x)])))))
-                     (comp
-                      decode-rf
-                      (rf/once-rf (fn [{:context/keys [stuns]
-                                        :http/keys [host port]
-                                        :stun/keys [ip port]
-                                        :as x}]
-                                    (vswap! stuns conj {:ip ip :port port :host host})
-                                    x)))
-
-                     #_(rf/repeat-rf 3 (comp
-                                        decode-rf
-                                        (rf/once-rf (fn [{:context/keys [stuns]
-                                                          :http/keys [host port]
-                                                          :stun/keys [ip port]
-                                                          :as x}]
-                                                      (vswap! stuns conj {:ip ip :port port :host host})
-                                                      x))))
+                       decode-rf
+                       (rf/once-rf (fn [{:context/keys [stuns]
+                                         :http/keys [host port]
+                                         :stun/keys [ip port]
+                                         :as x}]
+                                     (vswap! stuns conj {:ip ip :port port :host host})
+                                     x))))
                      (drop-while (fn [{{:keys [reserve commit block decommit] :as bip} :nio/out}]
                                    (.hasRemaining (block))))
                      nio/close-connection))
@@ -1403,10 +1336,14 @@
               :context/stuns (volatile! [])
               :stun/buf (ByteBuffer/allocate 150)
               ;;:http/local-host (->> (jaq.http.xrf.ice/ips) (last))
-              :http/local-port 60001
+              :http/local-port 8080 #_1000 #_0 #_(-> fpp.server/env :PORT (Integer/parseInt))
               }]
             (into [] xf)
             (first))))
+
+   (keys fpp.server/env)
+   (-> fpp.server/env :PORT (Integer/parseInt))
+
    *ns*
    *e
    (in-ns 'jaq.http.xrf.stun)
@@ -1415,6 +1352,7 @@
    *ns*
 
    (-> x :context/stuns (deref))
+   (-> x (keys))
 
    (-> y :stun/ip)
    (-> y :stun/port)
@@ -1435,7 +1373,7 @@
                 (-> e (.channel) (.socket) (.getLocalPort))])))
    (-> x :nio/selector (.keys) (first) (.attachment) :context/x (nio/datagram-receive!))
    *ns*
-
+   *e
    )
 
 #_(
@@ -1639,6 +1577,7 @@
                  (nio/datagram-channel-rf
                   (comp
                    discover-rf
+                   (map (fn [x] (def y x) x))
                    nio/close-connection))
                  nio/writable-rf))
                nio/close-rf)))]
@@ -1647,6 +1586,7 @@
    (def x (first *1))
    *e
 
+   (keys y)
    (-> x :nio/selector (.keys))
    (->> x :nio/selector (.keys) (map (fn [e]
                                        (-> e (.channel) (.close))
@@ -1896,5 +1836,7 @@
 
    (in-ns 'jaq.http.xrf.stun)
    (require 'jaq.http.xrf.stun :reload)
+   *ns*
+   (ns-publics 'jaq.http.xrf.stun)
 
    )
