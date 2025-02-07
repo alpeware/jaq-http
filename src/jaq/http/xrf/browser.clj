@@ -37,6 +37,11 @@
 (def cenv (atom nil))
 (def cljs-ns (atom 'cljs.user))
 
+#_(
+   (in-ns 'jaq.http.xrf.browser)
+   @cljs-ns
+   )
+
 ;; TODO: switch server
 ;; TODO: change read-print-eval loop
 
@@ -362,7 +367,7 @@
                           (catch Throwable e
                             #_(throw (ex-info nil {:clojure.error/phase :read-source} e))
                             (prn (ex-info nil {:clojure.error/phase :read-source} e)))))]
-             (prn ::form form)
+             (prn ::ns ana/*cljs-ns* ::form form)
              (try
                (if (and (seq? form) (is-special-fn? (first input)))
                  (do
@@ -370,16 +375,23 @@
                    ;; TODO: handle special fns
                    ((get special-fns (first form)) repl-env env input opts)
                    (print nil))
-                 (evaluate-form repl-env
-                                (assoc env :ns (ana/get-namespace ana/*cljs-ns*))
-                                "<cljs repl>"
-                                form
-                                identity
-                                opts))
+                 (comp/with-core-cljs
+                  opts
+                  (fn []
+                    (evaluate-form repl-env
+                                   (assoc env :ns @cljs-ns #_(ana/get-namespace ana/*cljs-ns*))
+                                   "<cljs repl>"
+                                   form
+                                   identity
+                                   opts))))
                (catch Throwable e
                  (caught e repl-env opts)
                  nil)))
            )))}))
+
+#_(
+   *e
+   )
 
 (def env-rf
   (fn [rf]
@@ -495,8 +507,10 @@
    ;; start cljs repl providing it's own server
    (def repl-env (repl-env* {:port 10010 :launch-browser false :host "0.0.0.0" :repl-verbose true}))
    (def e (repl* repl-env {}))
+   *e
 
    (-> e :opts :repl-verbose)
+   (-> e :opts (keys))
 
    (let [input '(ns cljs.user (:require [cljs.core]
                                         [cljs.repl :refer-macros [source doc find-doc apropos dir pst]]
@@ -541,7 +555,7 @@
    (cljsc/build "src"
                 {:optimizations #_:advanced #_:simple :none
                  :output-dir "out"
-                 ;;:output-to "out/app.js"
+                 :output-to "out/app.js"
                  ;;:fingerprint true
                  :verbose true
                  :source-map true #_"out/app.js.map"

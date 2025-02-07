@@ -35,19 +35,20 @@
           (assoc x
                  :event/target request
                  :event/types [:error :success])))
-   (rf/bind-rf)
-   (rf/choose-rf :event/type
-                 {:error (comp
-                          (map (fn [{:event/keys [event target] :as x}]
-                                 (.info js/console event)
-                                 (assoc x :error/error (.-error target)))))
-                  :success (comp
-                            (rf/one-rf :db/db
-                                       (comp
-                                        (map (fn [{:event/keys [target] :as x}]
-                                               (assoc x
-                                                      :db/db (.-result target))))
-                                        (map :db/db))))})))
+   #_(rf/bind-rf
+    (comp
+     (rf/choose-rf :event/type
+                   {:error (comp
+                            (map (fn [{:event/keys [event target] :as x}]
+                                   (.info js/console event)
+                                   (assoc x :error/error (.-error target)))))
+                    :success (comp
+                              (rf/one-rf :db/db
+                                         (comp
+                                          (map (fn [{:event/keys [target] :as x}]
+                                                 (assoc x
+                                                        :db/db (.-result target))))
+                                          (map :db/db))))})))))
 
 (def close-db-rf
   (rf/once-rf (fn [{:db/keys [db] :as x}]

@@ -28,13 +28,28 @@
     (let [true-rf (true-xform rf)
           false-rf (false-xform rf)]
       (fn
-        ([] (true-rf) (false-rf))
+        ([] #_(true-rf) #_(false-rf) (rf))
         ([result]
-         (true-rf (false-rf result)))
+         (rf result)
+         #_(true-rf  (false-rf result)))
         ([result input]
          (if (pred input)
            (true-rf result input)
            (false-rf result input)))))))
+
+
+(defn when-rf
+  [pred true-xform]
+  (fn [rf]
+    (let [true-rf (true-xform rf)]
+      (fn
+        ([] (rf))
+        ([result]
+         (rf result))
+        ([result input]
+         (if (pred input)
+           (true-rf result input)
+           (rf result input)))))))
 
 (def identity-rf
   (fn [rf]
@@ -325,8 +340,89 @@
          (-> (get rfs (pred x) default-rf)
              (apply [acc x])))))))
 
+(def multi-registry (volatile! {}))
+
+(defn add-multi-rf [k pred]
+  (fn [rf]
+    (let [once (volatile! nil)]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (when-not @once
+           (vswap! multi-registry assoc k {:multi/mm-name k
+                                           :multi/dispatch-fn pred
+                                           :multi/method-table {}})
+           (vreset! once true))
+         (->> (assoc x :multi/registry @multi-registry)
+              (rf acc)))))))
+
+(defn add-multi-method-rf [k f xf]
+  (fn [rf]
+    (let [once (volatile! nil)
+          xrf (xf (result-fn))]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (when-not @once
+           (vswap! multi-registry assoc-in [k :multi/method-table f] xrf)
+           (vreset! once true))
+         (->> (assoc x :multi/registry @multi-registry)
+              (rf acc)))))))
+
+(defn dispatch-multi-rf [k]
+  (fn [rf]
+    (let []
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc x]
+         (let [{:multi/keys [dispatch-fn method-table]} (get @multi-registry k)
+               f (dispatch-fn x)
+               default-rf (or (:default method-table))
+               xf (get method-table f default-rf)]
+           (when-not xf
+             (prn ::multi :no-method k dispatch-fn))
+           (xf acc (assoc x :multi/mm-name k :multi/method f))
+           (if-let [x' (xf)]
+             (rf acc x')
+             acc)))))))
+
 #_(
 
+   *e
+   (in-ns 'clojure.core)
+   (require 'jaq.http.xrf.rf)
+   
+   (->> [{}]
+        (into []
+              (comp
+               (add-multi-rf :multi/test :multi/dispatch)
+               (add-multi-method-rf :multi/test :multi/foo (comp
+                                                            (map (fn [x]
+                                                                   (prn :foo x)
+                                                                   x)))))))
+
+      (->> [{}]
+        (into []
+              (comp
+               (add-multi-method-rf :multi/test :multi/bar (comp
+                                                            (map (fn [x]
+                                                                   (prn :bar x)
+                                                                   x)))))))
+
+   @multi-registry
+
+   (->> [{:multi/dispatch :multi/foo #_:multi/bar}]
+        (into []
+              (comp
+               (dispatch-multi-rf :multi/test)
+               #_(map (fn [x]
+                      (prn x)
+                      x)))))
+
+   (in-ns 'jaq.http.xrf.rf)
    (into []
          (choose-rf :xf {:foo (map (fn [x]
                                      (assoc x :v :foo-bar)))})

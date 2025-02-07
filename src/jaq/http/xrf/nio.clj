@@ -825,7 +825,7 @@
                                              :context/rf (xf (rf/result-fn))))
                            #_(readable!)
                            #_(read-connectable!))]
-           (prn ::connection sk)
+           #_(prn ::connection sk)
            #_(prn ::connectable (some-> sk (.isConnectable)))
            (some-> sk
                    ;; TODO: fix
